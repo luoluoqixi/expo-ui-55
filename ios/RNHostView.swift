@@ -10,8 +10,9 @@ internal final class RNHostViewProps: ExpoSwiftUI.ViewProps {
 }
 
 struct RNHostView: ExpoSwiftUI.View {
-  
+
   @ObservedObject var props: RNHostViewProps
+  @StateObject private var touchHandler = RNHostTouchHandler()
 
   var body: some View {
     let matchContentsHorizontal = props.matchContentsHorizontal ?? props.matchContents ?? false
@@ -27,7 +28,10 @@ struct RNHostView: ExpoSwiftUI.View {
         Children()
       }
       .onAppear {
-        ExpoUITouchHandlerHelper.createAndAttachTouchHandler(for: childUIView)
+        touchHandler.attach(to: childUIView)
+      }
+      .onDisappear {
+        touchHandler.detach()
       }
     } else {
       Children()
@@ -39,14 +43,44 @@ struct RNHostView: ExpoSwiftUI.View {
         )
         .onAppear {
           if let view = firstChildUIView {
-            ExpoUITouchHandlerHelper.createAndAttachTouchHandler(for: view)
+            touchHandler.attach(to: view)
           }
+        }
+        .onDisappear {
+          touchHandler.detach()
         }
     }
   }
 
   private var firstChildUIView: UIView? {
     props.children?.first?.uiView
+  }
+}
+
+private final class RNHostTouchHandler: ObservableObject {
+  private weak var touchHandler: UIGestureRecognizer?
+  private weak var attachedView: UIView?
+
+  func attach(to view: UIView) {
+    if attachedView === view, touchHandler != nil {
+      return
+    }
+
+    detach()
+    touchHandler = ExpoUITouchHandlerHelper.createAndAttachTouchHandler(for: view)
+    attachedView = view
+  }
+
+  func detach() {
+    if let touchHandler, let attachedView {
+      ExpoUITouchHandlerHelper.detachTouchHandler(touchHandler, from: attachedView)
+    }
+    touchHandler = nil
+    attachedView = nil
+  }
+
+  deinit {
+    detach()
   }
 }
 

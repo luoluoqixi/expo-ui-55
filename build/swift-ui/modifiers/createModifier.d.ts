@@ -18,7 +18,7 @@ export interface ModifierConfig {
  * @example
  * ```ts
  * // In a 3rd party package
- * import { createModifier } from '@expo/ui/swift-ui/modifiers';
+ * import { createModifier } from '@luoluoqixi/expo-ui-55/swift-ui/modifiers';
  *
  * export const blurEffect = (params: { radius: number; style?: string }) =>
  *   createModifier('blurEffect', params);

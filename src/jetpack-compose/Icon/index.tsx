@@ -110,7 +110,7 @@ function transformIconProps(props: IconProps): NativeIconProps {
  * @example
  * Basic usage:
  * ```tsx
- * import { Icon } from 'expo-ui';
+ * import { Icon } from '@luoluoqixi/expo-ui-55/jetpack-compose';
  *
  * <Icon source={require('./assets/home.xml')} />
  * ```

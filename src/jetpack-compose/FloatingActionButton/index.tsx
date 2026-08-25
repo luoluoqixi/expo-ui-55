@@ -113,7 +113,7 @@ function transformProps(
  *
  * @example
  * ```tsx
- * import { SmallFloatingActionButton, Host, Icon } from '@expo/ui/jetpack-compose';
+ * import { SmallFloatingActionButton, Host, Icon } from '@luoluoqixi/expo-ui-55/jetpack-compose';
  *
  * <Host matchContents>
  *   <SmallFloatingActionButton onClick={() => console.log('pressed')}>
@@ -137,7 +137,7 @@ export { SmallFloatingActionButtonComponent as SmallFloatingActionButton };
  *
  * @example
  * ```tsx
- * import { FloatingActionButton, Host, Icon } from '@expo/ui/jetpack-compose';
+ * import { FloatingActionButton, Host, Icon } from '@luoluoqixi/expo-ui-55/jetpack-compose';
  *
  * <Host matchContents>
  *   <FloatingActionButton onClick={() => console.log('pressed')}>
@@ -161,7 +161,7 @@ export { FloatingActionButtonComponent as FloatingActionButton };
  *
  * @example
  * ```tsx
- * import { LargeFloatingActionButton, Host, Icon } from '@expo/ui/jetpack-compose';
+ * import { LargeFloatingActionButton, Host, Icon } from '@luoluoqixi/expo-ui-55/jetpack-compose';
  *
  * <Host matchContents>
  *   <LargeFloatingActionButton onClick={() => console.log('pressed')}>
@@ -185,7 +185,7 @@ export { LargeFloatingActionButtonComponent as LargeFloatingActionButton };
  *
  * @example
  * ```tsx
- * import { ExtendedFloatingActionButton, Host, Icon, Text } from '@expo/ui/jetpack-compose';
+ * import { ExtendedFloatingActionButton, Host, Icon, Text } from '@luoluoqixi/expo-ui-55/jetpack-compose';
  *
  * <Host matchContents>
  *   <ExtendedFloatingActionButton expanded={true} onClick={() => console.log('pressed')}>

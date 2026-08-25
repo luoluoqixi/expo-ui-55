@@ -19,8 +19,8 @@ export type LinkProps = {
  *
  * @example
  * ```tsx
- * import { Link } from '@expo/ui/swift-ui';
- * import { foregroundStyle, font } from '@expo/ui/swift-ui/modifiers';
+ * import { Link } from '@luoluoqixi/expo-ui-55/swift-ui';
+ * import { foregroundStyle, font } from '@luoluoqixi/expo-ui-55/swift-ui/modifiers';
  *
  * <Link
  *   label="Open"

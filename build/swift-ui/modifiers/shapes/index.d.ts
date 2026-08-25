@@ -5,8 +5,8 @@
  *
  * @example
  * ```tsx
- * import { background, shapes } from '@expo/ui/swift-ui/modifiers';
- * import { Text, Host } from '@expo/ui/swift-ui';
+ * import { background, shapes } from '@luoluoqixi/expo-ui-55/swift-ui/modifiers';
+ * import { Text, Host } from '@luoluoqixi/expo-ui-55/swift-ui';
  *
  * function Example() {
  *   return (

@@ -105,7 +105,7 @@ export interface CommonViewModifierProps {
    *
    * @example
    * ```tsx
-   * import { background, cornerRadius, shadow, frame, padding, fixedSize } from '@expo/ui/swift-ui/modifiers';
+   * import { background, cornerRadius, shadow, frame, padding, fixedSize } from '@luoluoqixi/expo-ui-55/swift-ui/modifiers';
    *
    * <Text modifiers={[
    *   background('#FF0000'),

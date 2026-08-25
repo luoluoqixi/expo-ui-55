@@ -9,9 +9,9 @@ import type { Shape } from './shapes/index';
  *
  * @example
  * ```tsx
- * import { HStack, List, Section, Spacer, Text } from "@expo/ui/swift-ui";
- * import { contentShape, onTapGesture } from "@expo/ui/swift-ui/modifiers";
- * import { shapes } from "@expo/ui/swift-ui/modifiers";
+ * import { HStack, List, Section, Spacer, Text } from "@luoluoqixi/expo-ui-55/swift-ui";
+ * import { contentShape, onTapGesture } from "@luoluoqixi/expo-ui-55/swift-ui/modifiers";
+ * import { shapes } from "@luoluoqixi/expo-ui-55/swift-ui/modifiers";
  *
  * function InteractiveRow() {
  *   return (

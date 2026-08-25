@@ -20,8 +20,8 @@ import {
  *
  * @example
  * ```tsx
- * import { Host, VStack } from '@expo/ui/swift-ui';
- * import { animation, Animation } from '@expo/ui/swift-ui/modifiers';
+ * import { Host, VStack } from '@luoluoqixi/expo-ui-55/swift-ui';
+ * import { animation, Animation } from '@luoluoqixi/expo-ui-55/swift-ui/modifiers';
  *
  * function Example() {
  *   const [isExpanded, setIsExpanded] = useState(false);

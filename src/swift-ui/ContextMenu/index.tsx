@@ -11,7 +11,7 @@ type NativeMenuProps = ContextMenuProps;
 const MenuNativeView: ComponentType<NativeMenuProps> = requireNativeView('ExpoUI', 'ContextMenu');
 
 /**
- * Items visible inside the context menu. It could be `Section`, `Divider`, `Button`, `Toggle`, `Picker` or even `ContextMenu` itself for nested menus. Remember to use components from the `@expo/ui/swift-ui` library.
+ * Items visible inside the context menu. It could be `Section`, `Divider`, `Button`, `Toggle`, `Picker` or even `ContextMenu` itself for nested menus. Remember to use components from the `@luoluoqixi/expo-ui-55/swift-ui` library.
  */
 export function Items(props: { children: React.ReactNode }) {
   return <Slot name="items">{props.children}</Slot>;

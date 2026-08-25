@@ -40,8 +40,8 @@ export type ButtonProps = {
  *
  * @example
  * ```tsx
- * import { Button } from '@expo/ui/swift-ui';
- * import { buttonStyle, controlSize, tint, disabled } from '@expo/ui/swift-ui/modifiers';
+ * import { Button } from '@luoluoqixi/expo-ui-55/swift-ui';
+ * import { buttonStyle, controlSize, tint, disabled } from '@luoluoqixi/expo-ui-55/swift-ui/modifiers';
  *
  * <Button
  *   role="destructive"

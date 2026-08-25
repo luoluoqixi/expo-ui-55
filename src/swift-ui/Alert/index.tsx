@@ -45,7 +45,7 @@ function Trigger(props: { children: React.ReactNode }) {
 }
 
 /**
- * The action buttons displayed in the alert. Use `Button` components from `@expo/ui/swift-ui` as children.
+ * The action buttons displayed in the alert. Use `Button` components from `@luoluoqixi/expo-ui-55/swift-ui` as children.
  */
 function Actions(props: { children: React.ReactNode }) {
   return <Slot name="actions">{props.children}</Slot>;

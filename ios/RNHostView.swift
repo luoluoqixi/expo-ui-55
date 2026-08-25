@@ -33,6 +33,19 @@ struct RNHostView: ExpoSwiftUI.View {
       .onDisappear {
         touchHandler.detach()
       }
+    } else if matchContentsHorizontal || matchContentsVertical {
+      // The hosted UIView may not be available during the first SwiftUI pass.
+      // Keep the content unbounded until it appears instead of falling back to
+      // a fill layout, which can leave matchContents views incorrectly placed.
+      Children()
+        .onAppear {
+          if let view = firstChildUIView {
+            touchHandler.attach(to: view)
+          }
+        }
+        .onDisappear {
+          touchHandler.detach()
+        }
     } else {
       Children()
         .frame(maxWidth: .infinity, maxHeight: .infinity)

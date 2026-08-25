@@ -40,3 +40,36 @@ internal struct ContainerRelativeFrameModifier: ViewModifier, Record {
     }
   }
 }
+
+internal enum ContentMarginPlacementType: String, Enumerable {
+  case automatic
+  case scrollContent
+  case scrollIndicators
+
+  @available(iOS 17.0, tvOS 17.0, macOS 14.0, watchOS 10.0, *)
+  func toSwiftUI() -> SwiftUI.ContentMarginPlacement {
+    switch self {
+    case .scrollContent:
+      return .scrollContent
+    case .scrollIndicators:
+      return .scrollIndicators
+    case .automatic:
+      return .automatic
+    }
+  }
+}
+
+internal struct ContentMarginsModifier: ViewModifier, Record {
+  @Field var edges: EdgeOptions = .all
+  @Field var length: CGFloat?
+  @Field var placement: ContentMarginPlacementType = .automatic
+
+  @ViewBuilder
+  func body(content: Content) -> some View {
+    if #available(iOS 17.0, tvOS 17.0, macOS 14.0, watchOS 10.0, *) {
+      content.contentMargins(edges.toEdge(), length, for: placement.toSwiftUI())
+    } else {
+      content
+    }
+  }
+}

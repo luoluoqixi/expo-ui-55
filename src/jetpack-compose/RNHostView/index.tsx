@@ -12,7 +12,7 @@ export interface RNHostProps extends PrimitiveBaseProps {
    * Can be only set once on mount.
    * @default false
    */
-  matchContents?: boolean;
+  matchContents?: boolean | { vertical?: boolean; horizontal?: boolean };
   /**
    * The RN View to be hosted.
    */
@@ -23,28 +23,45 @@ export interface RNHostProps extends PrimitiveBaseProps {
   modifiers?: ModifierConfig[];
 }
 
-type NativeRNHostProps = RNHostProps;
+type NativeRNHostProps = Omit<RNHostProps, 'matchContents'> & {
+  matchContentsHorizontal?: boolean;
+  matchContentsVertical?: boolean;
+};
 const NativeRNHostView: React.ComponentType<NativeRNHostProps> = requireNativeView(
   'ExpoUI',
   'RNHostView'
 );
 
 function transformProps(props: RNHostProps): NativeRNHostProps {
-  const { modifiers, ...restProps } = props;
+  const { matchContents, modifiers, ...restProps } = props;
+  const matchContentsVertical =
+    typeof matchContents === 'object' ? matchContents.vertical : matchContents;
+  const matchContentsHorizontal =
+    typeof matchContents === 'object' ? matchContents.horizontal : matchContents;
+
   return {
     modifiers,
     ...(modifiers ? createViewModifierEventListener(modifiers) : undefined),
+    matchContentsHorizontal,
+    matchContentsVertical,
     ...restProps,
   };
 }
 
 export function RNHostView(props: RNHostProps) {
+  const matchContentsVertical =
+    typeof props.matchContents === 'object' ? props.matchContents.vertical : props.matchContents;
+  const matchContentsHorizontal =
+    typeof props.matchContents === 'object'
+      ? props.matchContents.horizontal
+      : props.matchContents;
+
   return (
     <NativeRNHostView
       {...transformProps(props)}
       // `matchContents` can only be used once on mount
       // So we force unmount when it changes to prevent unexpected layout
-      key={props.matchContents ? 'matchContents' : 'noMatchContents'}
+      key={`matchContents:${matchContentsHorizontal ? '1' : '0'}:${matchContentsVertical ? '1' : '0'}`}
     />
   );
 }

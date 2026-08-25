@@ -19,8 +19,12 @@ struct SliderView: ExpoSwiftUI.View {
         value = props.value ?? 0.0
       }
       .onChange(of: props.value) { newValue in
-        guard !isEditing else { return }
-        value = newValue ?? 0.0
+        if #available(iOS 26.0, *) {
+          value = newValue ?? 0.0
+        } else {
+          guard !isEditing else { return }
+          value = newValue ?? 0.0
+        }
       }
       .onChange(of: value) { newValue in
         if props.value != newValue {
@@ -40,51 +44,91 @@ struct SliderView: ExpoSwiftUI.View {
     let label = props.children?.slot("label")
     let minimumValueLabel = props.children?.slot("minimum")
     let maximumValueLabel = props.children?.slot("maximum")
+    let hasAnyLabel = label != nil || minimumValueLabel != nil || maximumValueLabel != nil
 
     if let min = props.min, let max = props.max, let step = props.step {
-      Slider(
-        value: $value,
-        in: min...max,
-        step: step,
-        label: { label },
-        minimumValueLabel: { minimumValueLabel },
-        maximumValueLabel: { maximumValueLabel }
-      ) { isEditing in
-        self.isEditing = isEditing
-        props.onEditingChanged(["isEditing": isEditing])
+      if hasAnyLabel {
+        Slider(
+          value: $value,
+          in: min...max,
+          step: step,
+          label: { label },
+          minimumValueLabel: { minimumValueLabel },
+          maximumValueLabel: { maximumValueLabel }
+        ) { isEditing in
+          self.isEditing = isEditing
+          props.onEditingChanged(["isEditing": isEditing])
+        }
+      } else {
+        Slider(
+          value: $value,
+          in: min...max,
+          step: step
+        ) { isEditing in
+          self.isEditing = isEditing
+          props.onEditingChanged(["isEditing": isEditing])
+        }
       }
     } else if let min = props.min, let max = props.max {
-      Slider(
-        value: $value,
-        in: min...max,
-        label: { label },
-        minimumValueLabel: { minimumValueLabel },
-        maximumValueLabel: { maximumValueLabel }
-      ) { isEditing in
-        self.isEditing = isEditing
-        props.onEditingChanged(["isEditing": isEditing])
+      if hasAnyLabel {
+        Slider(
+          value: $value,
+          in: min...max,
+          label: { label },
+          minimumValueLabel: { minimumValueLabel },
+          maximumValueLabel: { maximumValueLabel }
+        ) { isEditing in
+          self.isEditing = isEditing
+          props.onEditingChanged(["isEditing": isEditing])
+        }
+      } else {
+        Slider(
+          value: $value,
+          in: min...max
+        ) { isEditing in
+          self.isEditing = isEditing
+          props.onEditingChanged(["isEditing": isEditing])
+        }
       }
     } else if let step = props.step {
-      Slider(
-        value: $value,
-        in: 0...1,
-        step: step,
-        label: { label },
-        minimumValueLabel: { minimumValueLabel },
-        maximumValueLabel: { maximumValueLabel }
-      ) { isEditing in
-        self.isEditing = isEditing
-        props.onEditingChanged(["isEditing": isEditing])
+      if hasAnyLabel {
+        Slider(
+          value: $value,
+          in: 0...1,
+          step: step,
+          label: { label },
+          minimumValueLabel: { minimumValueLabel },
+          maximumValueLabel: { maximumValueLabel }
+        ) { isEditing in
+          self.isEditing = isEditing
+          props.onEditingChanged(["isEditing": isEditing])
+        }
+      } else {
+        Slider(
+          value: $value,
+          in: 0...1,
+          step: step
+        ) { isEditing in
+          self.isEditing = isEditing
+          props.onEditingChanged(["isEditing": isEditing])
+        }
       }
     } else {
-      Slider(
-        value: $value,
-        label: { label },
-        minimumValueLabel: { minimumValueLabel },
-        maximumValueLabel: { maximumValueLabel }
-      ) { isEditing in
-        self.isEditing = isEditing
-        props.onEditingChanged(["isEditing": isEditing])
+      if hasAnyLabel {
+        Slider(
+          value: $value,
+          label: { label },
+          minimumValueLabel: { minimumValueLabel },
+          maximumValueLabel: { maximumValueLabel }
+        ) { isEditing in
+          self.isEditing = isEditing
+          props.onEditingChanged(["isEditing": isEditing])
+        }
+      } else {
+        Slider(value: $value) { isEditing in
+          self.isEditing = isEditing
+          props.onEditingChanged(["isEditing": isEditing])
+        }
       }
     }
   }

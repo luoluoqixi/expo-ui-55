@@ -16,9 +16,21 @@ public struct UIBaseView<Props: UIBaseViewProps, Content: ExpoSwiftUI.View<Props
   }
 
   public var body: some View {
-    innerView
-      .applyAccessibilityIdentifier(props.testID)
-      .applyModifiers(props.modifiers, appContext: props.appContext, globalEventDispatcher: props.globalEventDispatcher)
+    if let listProps = props as? ListProps {
+      let editMode = Binding<EditMode>(
+        get: { listProps.nativeEditMode.toNativeEditMode() },
+        set: { _ in }
+      )
+      innerView
+        .applyAccessibilityIdentifier(props.testID)
+        .applyModifiers(props.modifiers, appContext: props.appContext, globalEventDispatcher: props.globalEventDispatcher)
+        .environment(\.editMode, editMode)
+        .tint(listProps.nativeEditMode == .active ? listProps.nativeEditTint : nil)
+    } else {
+      innerView
+        .applyAccessibilityIdentifier(props.testID)
+        .applyModifiers(props.modifiers, appContext: props.appContext, globalEventDispatcher: props.globalEventDispatcher)
+    }
   }
 }
 

@@ -4,7 +4,9 @@ import SwiftUI
 import ExpoModulesCore
 
 internal final class RNHostViewProps: ExpoSwiftUI.ViewProps {
-  @Field var matchContents: Bool = false
+  @Field var matchContents: Bool?
+  @Field var matchContentsHorizontal: Bool?
+  @Field var matchContentsVertical: Bool?
 }
 
 struct RNHostView: ExpoSwiftUI.View {
@@ -12,8 +14,16 @@ struct RNHostView: ExpoSwiftUI.View {
   @ObservedObject var props: RNHostViewProps
 
   var body: some View {
-    if props.matchContents, let childUIView = firstChildUIView {
-      ApplySizeFromYogaNode(childUIView: childUIView) {
+    let matchContentsHorizontal = props.matchContentsHorizontal ?? props.matchContents ?? false
+    let matchContentsVertical = props.matchContentsVertical ?? props.matchContents ?? false
+
+    if (matchContentsHorizontal || matchContentsVertical), let childUIView = firstChildUIView {
+      ApplySizeFromYogaNode(
+        childUIView: childUIView,
+        shadowNodeProxy: props.shadowNodeProxy,
+        matchContentsHorizontal: matchContentsHorizontal,
+        matchContentsVertical: matchContentsVertical
+      ) {
         Children()
       }
       .onAppear {
@@ -22,7 +32,11 @@ struct RNHostView: ExpoSwiftUI.View {
     } else {
       Children()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .modifier(ReportSizeToYogaNodeModifier(shadowNodeProxy: props.shadowNodeProxy))
+        .modifier(
+          ReportSizeToYogaNodeModifier(
+            shadowNodeProxy: props.shadowNodeProxy
+          )
+        )
         .onAppear {
           if let view = firstChildUIView {
             ExpoUITouchHandlerHelper.createAndAttachTouchHandler(for: view)
@@ -40,16 +54,44 @@ struct RNHostView: ExpoSwiftUI.View {
 // Listens to Yoga node size changes and updates the SwiftUI view size
 private struct ApplySizeFromYogaNode<Content: SwiftUI.View>: SwiftUI.View {
   @StateObject private var observer: Observer
+  let shadowNodeProxy: ExpoSwiftUI.ShadowNodeProxy
+  let matchContentsHorizontal: Bool
+  let matchContentsVertical: Bool
   let content: Content
 
-  init(childUIView: UIView, @ViewBuilder content: () -> Content) {
+  init(
+    childUIView: UIView,
+    shadowNodeProxy: ExpoSwiftUI.ShadowNodeProxy,
+    matchContentsHorizontal: Bool,
+    matchContentsVertical: Bool,
+    @ViewBuilder content: () -> Content
+  ) {
     _observer = StateObject(wrappedValue: Observer(view: childUIView))
+    self.shadowNodeProxy = shadowNodeProxy
+    self.matchContentsHorizontal = matchContentsHorizontal
+    self.matchContentsVertical = matchContentsVertical
     self.content = content()
   }
 
   var body: some SwiftUI.View {
     content
-      .frame(width: observer.size.width, height: observer.size.height)
+      .frame(
+        maxWidth: matchContentsHorizontal ? nil : .infinity,
+        maxHeight: matchContentsVertical ? nil : .infinity,
+        alignment: .topLeading
+      )
+      .frame(
+        width: matchContentsHorizontal ? observer.size.width : nil,
+        height: matchContentsVertical ? observer.size.height : nil,
+        alignment: .topLeading
+      )
+      .modifier(
+        ReportSizeToYogaNodeModifier(
+          shadowNodeProxy: shadowNodeProxy,
+          reportHorizontal: !matchContentsHorizontal,
+          reportVertical: !matchContentsVertical
+        )
+      )
   }
 
   @MainActor
@@ -76,9 +118,26 @@ private struct ApplySizeFromYogaNode<Content: SwiftUI.View>: SwiftUI.View {
 // Listens to SwiftUI view size changes and updates the Yoga node size
 private struct ReportSizeToYogaNodeModifier: ViewModifier {
   let shadowNodeProxy: ExpoSwiftUI.ShadowNodeProxy
+  let reportHorizontal: Bool
+  let reportVertical: Bool
+
+  init(
+    shadowNodeProxy: ExpoSwiftUI.ShadowNodeProxy,
+    reportHorizontal: Bool = true,
+    reportVertical: Bool = true
+  ) {
+    self.shadowNodeProxy = shadowNodeProxy
+    self.reportHorizontal = reportHorizontal
+    self.reportVertical = reportVertical
+  }
 
   private func handleSizeChange(_ size: CGSize) {
-    shadowNodeProxy.setViewSize?(size)
+    shadowNodeProxy.setViewSize?(
+      CGSize(
+        width: reportHorizontal ? size.width : CGFloat.nan,
+        height: reportVertical ? size.height : CGFloat.nan
+      )
+    )
   }
 
   func body(content: Content) -> some View {

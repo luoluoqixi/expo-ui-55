@@ -156,6 +156,13 @@ export const onTapGesture = (handler: () => void) =>
   createModifierWithEventListener('onTapGesture', handler);
 
 /**
+ * Adds a tap gesture recognizer that ignores child controls.
+ * @param handler - Function to call when tapped.
+ */
+export const simultaneousTapGesture = (handler: () => void) =>
+  createModifierWithEventListener('simultaneousTapGesture', handler);
+
+/**
  * Adds a long press gesture recognizer.
  * @param handler - Function to call when long pressed.
  * @param minimumDuration - Minimum duration for long press (default: 0.5s)
@@ -569,6 +576,28 @@ export const scrollDismissesKeyboard = (
 export const scrollDisabled = (disabled: boolean = true) =>
   createModifier('scrollDisabled', { disabled });
 
+/**
+ * Sets content margins for scrollable content or scroll indicators.
+ * @param params - The target edges, inset length and placement.
+ * @platform ios 17.0+
+ * @platform tvos 17.0+
+ * @platform macos 14.0+
+ * @platform watchos 10.0+
+ * @see Official [SwiftUI documentation](https://developer.apple.com/documentation/swiftui/view/contentmargins(_:_:for:)).
+ */
+export const contentMargins = (params: {
+  edges?: 'all' | 'top' | 'bottom' | 'leading' | 'trailing' | 'horizontal' | 'vertical';
+  length?: number | null;
+  placement?: 'automatic' | 'scrollContent' | 'scrollIndicators';
+}) => createModifier('contentMargins', params);
+
+/**
+ * Sets a stable SwiftUI identity for scroll targeting.
+ * @param value - The identity to set on the view.
+ * @see Official [SwiftUI documentation](https://developer.apple.com/documentation/swiftui/view/id(_:)).
+ */
+export const viewID = (value: string | number) => createModifier('viewID', { value });
+
 type UnitPointValue =
   | 'zero'
   | 'topLeading'
@@ -771,6 +800,32 @@ export const scrollContentBackground = (visible: 'automatic' | 'visible' | 'hidd
  * @see Official [SwiftUI documentation](https://developer.apple.com/documentation/swiftui/view/listrowbackground(_:)).
  */
 export const listRowBackground = (color: Color) => createModifier('listRowBackground', { color });
+
+/**
+ * Masks the square top corners of a row on iOS 15 without replacing its native background.
+ * This preserves the system pressed highlight when a transparent helper row precedes it.
+ * Ignored on newer iOS versions.
+ * @platform ios 15
+ */
+export const ios15ListRowTopRoundedBackground = (
+  cornerRadius: number = 10,
+  insets: { horizontal?: number; leading?: number; trailing?: number; top?: number } = {}
+) =>
+  createModifier('ios15ListRowTopRoundedBackground', {
+    cornerRadius,
+    horizontalInset: insets.horizontal ?? 0,
+    leadingInset: insets.leading,
+    trailingInset: insets.trailing,
+    topInset: insets.top ?? 0,
+  });
+
+/**
+ * Hides only the enclosing UITableViewCell separator on iOS 15 and restores
+ * the original inset when the row is removed or reused.
+ * @platform ios 15
+ */
+export const ios15ListRowSeparatorHidden = () =>
+  createModifier('ios15ListRowSeparatorHidden', {});
 
 /**
  * Controls the visibility of the separator for a list row.
@@ -1267,6 +1322,8 @@ export type BuiltInModifier =
   | ReturnType<typeof containerShape>
   | ReturnType<typeof contentShape>
   | ReturnType<typeof containerRelativeFrame>
+  | ReturnType<typeof contentMargins>
+  | ReturnType<typeof viewID>
   | ReturnType<typeof scrollContentBackground>
   | ReturnType<typeof scrollDisabled>
   | ReturnType<typeof defaultScrollAnchor>
@@ -1277,6 +1334,8 @@ export type BuiltInModifier =
   | ReturnType<typeof deleteDisabled>
   | ReturnType<typeof environment>
   | ReturnType<typeof listRowBackground>
+  | ReturnType<typeof ios15ListRowTopRoundedBackground>
+  | ReturnType<typeof ios15ListRowSeparatorHidden>
   | ReturnType<typeof listRowSeparator>
   | ReturnType<typeof truncationMode>
   | ReturnType<typeof allowsTightening>

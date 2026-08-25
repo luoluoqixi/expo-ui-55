@@ -120,6 +120,25 @@ internal struct OpacityModifier: ViewModifier, Record {
   }
 }
 
+internal struct ViewIDModifier: ViewModifier, Record {
+  @Field var value: Either<String, Double>?
+
+  @ViewBuilder
+  func body(content: Content) -> some View {
+    if let value {
+      if let stringValue: String = value.get() {
+        content.id(AnyHashable(stringValue))
+      } else if let doubleValue: Double = value.get() {
+        content.id(AnyHashable(doubleValue))
+      } else {
+        content
+      }
+    } else {
+      content
+    }
+  }
+}
+
 internal struct ScaleEffectModifier: ViewModifier, Record {
   @Field var x: CGFloat = 1.0
   @Field var y: CGFloat = 1.0
@@ -331,6 +350,28 @@ internal struct OnTapGestureModifier: ViewModifier, Record {
       content.onTapGesture {
         eventDispatcher?(["onTapGesture": [:]])
       }
+    }
+  }
+}
+
+internal struct SimultaneousTapGestureModifier: ViewModifier, Record {
+  var eventDispatcher: EventDispatcher?
+
+  init() {}
+
+  init(from params: Dict, appContext: AppContext, eventDispatcher: EventDispatcher) throws {
+    try self = .init(from: params, appContext: appContext)
+    self.eventDispatcher = eventDispatcher
+  }
+
+  func body(content: Content) -> some View {
+    if #available(iOS 15.0, tvOS 16.0, *) {
+      content.simultaneousGesture(
+        TapGesture().onEnded {
+          eventDispatcher?(["simultaneousTapGesture": [:]])
+        },
+        including: .gesture
+      )
     }
   }
 }
@@ -782,6 +823,386 @@ internal struct ListRowBackground: ViewModifier, Record {
     } else {
       content
     }
+  }
+}
+
+#if os(iOS)
+private final class Ios15ListRowBackgroundDecoration {
+  weak var view: UIView?
+  let cornerRadius: CGFloat
+  let maskedCorners: CACornerMask
+  let masksToBounds: Bool
+  let cornerCurve: CALayerCornerCurve
+
+  init(view: UIView) {
+    self.view = view
+    cornerRadius = view.layer.cornerRadius
+    maskedCorners = view.layer.maskedCorners
+    masksToBounds = view.layer.masksToBounds
+    cornerCurve = view.layer.cornerCurve
+  }
+
+  func restore() {
+    guard let view else { return }
+    view.layer.cornerRadius = cornerRadius
+    view.layer.maskedCorners = maskedCorners
+    view.layer.masksToBounds = masksToBounds
+    view.layer.cornerCurve = cornerCurve
+  }
+}
+
+private final class Ios15ListRowTopRoundedBackgroundView: UIView {
+  var cornerRadius: CGFloat = 10 {
+    didSet {
+      scheduleUpdates()
+    }
+  }
+
+  private weak var decoratedCell: UITableViewCell?
+  private var decorations: [Ios15ListRowBackgroundDecoration] = []
+  private var updateScheduled = false
+
+  override init(frame: CGRect) {
+    super.init(frame: frame)
+    isUserInteractionEnabled = false
+    isHidden = true
+  }
+
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) has not been implemented")
+  }
+
+  override func didMoveToSuperview() {
+    super.didMoveToSuperview()
+    scheduleUpdates()
+  }
+
+  override func didMoveToWindow() {
+    super.didMoveToWindow()
+    if window == nil {
+      restoreDecorations()
+    } else {
+      scheduleUpdates()
+    }
+  }
+
+  override func layoutSubviews() {
+    super.layoutSubviews()
+    scheduleUpdate()
+  }
+
+  func scheduleUpdates() {
+    scheduleUpdate()
+    scheduleUpdate(after: 0.05)
+    scheduleUpdate(after: 0.2)
+  }
+
+  private func scheduleUpdate(after delay: TimeInterval = 0) {
+    if delay == 0 {
+      guard !updateScheduled else { return }
+      updateScheduled = true
+    }
+
+    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+      guard let self else { return }
+      if delay == 0 {
+        self.updateScheduled = false
+      }
+      self.applyDecorations()
+    }
+  }
+
+  private func applyDecorations() {
+    guard window != nil else { return }
+    let cell = enclosingTableViewCell()
+
+    if decoratedCell !== cell {
+      restoreDecorations()
+      decoratedCell = cell
+    }
+
+    guard let cell else { return }
+    var backgroundViews: [UIView] = []
+
+    for candidate in [
+      cell.backgroundView,
+      cell.selectedBackgroundView,
+      cell.multipleSelectionBackgroundView
+    ].compactMap({ $0 }) where !backgroundViews.contains(where: { $0 === candidate }) {
+      backgroundViews.append(candidate)
+    }
+
+    decorations.removeAll { decoration in
+      guard let view = decoration.view,
+        backgroundViews.contains(where: { $0 === view }) else {
+        decoration.restore()
+        return true
+      }
+      return false
+    }
+
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
+
+    for backgroundView in backgroundViews {
+      if !decorations.contains(where: { $0.view === backgroundView }) {
+        decorations.append(Ios15ListRowBackgroundDecoration(view: backgroundView))
+      }
+      backgroundView.layer.cornerRadius = max(0, cornerRadius)
+      backgroundView.layer.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]
+      backgroundView.layer.masksToBounds = true
+      backgroundView.layer.cornerCurve = .continuous
+    }
+
+    CATransaction.commit()
+  }
+
+  private func restoreDecorations() {
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
+    decorations.forEach { $0.restore() }
+    CATransaction.commit()
+    decorations.removeAll()
+    decoratedCell = nil
+  }
+
+  private func enclosingTableViewCell() -> UITableViewCell? {
+    var ancestor = superview
+    while let view = ancestor {
+      if let cell = view as? UITableViewCell {
+        return cell
+      }
+      ancestor = view.superview
+    }
+    return nil
+  }
+}
+
+private struct Ios15ListRowTopRoundedBackgroundProbe: UIViewRepresentable {
+  let cornerRadius: CGFloat
+
+  func makeUIView(context: Context) -> Ios15ListRowTopRoundedBackgroundView {
+    let view = Ios15ListRowTopRoundedBackgroundView()
+    view.cornerRadius = cornerRadius
+    return view
+  }
+
+  func updateUIView(_ uiView: Ios15ListRowTopRoundedBackgroundView, context: Context) {
+    uiView.cornerRadius = cornerRadius
+    uiView.scheduleUpdates()
+  }
+}
+
+private final class Ios15ListRowSeparatorHiddenView: UIView {
+  private weak var decoratedCell: UITableViewCell?
+  private var originalSeparatorInset: UIEdgeInsets?
+  private var separatorInsetObservation: NSKeyValueObservation?
+  private var updateScheduled = false
+
+  override init(frame: CGRect) {
+    super.init(frame: frame)
+    isUserInteractionEnabled = false
+    isHidden = true
+  }
+
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) has not been implemented")
+  }
+
+  override func didMoveToSuperview() {
+    super.didMoveToSuperview()
+    scheduleUpdates()
+  }
+
+  override func didMoveToWindow() {
+    super.didMoveToWindow()
+    if window == nil {
+      restoreSeparatorInset()
+    } else {
+      scheduleUpdates()
+    }
+  }
+
+  override func willMove(toSuperview newSuperview: UIView?) {
+    if newSuperview == nil {
+      restoreSeparatorInset()
+    }
+    super.willMove(toSuperview: newSuperview)
+  }
+
+  override func layoutSubviews() {
+    super.layoutSubviews()
+    scheduleUpdate()
+  }
+
+  func scheduleUpdates() {
+    scheduleUpdate()
+    scheduleUpdate(after: 0.05)
+    scheduleUpdate(after: 0.2)
+  }
+
+  func restoreSeparatorInset() {
+    separatorInsetObservation?.invalidate()
+    separatorInsetObservation = nil
+    guard let decoratedCell, let originalSeparatorInset else {
+      self.decoratedCell = nil
+      self.originalSeparatorInset = nil
+      return
+    }
+    decoratedCell.separatorInset = originalSeparatorInset
+    self.decoratedCell = nil
+    self.originalSeparatorInset = nil
+  }
+
+  private func scheduleUpdate(after delay: TimeInterval = 0) {
+    if delay == 0 {
+      guard !updateScheduled else { return }
+      updateScheduled = true
+    }
+
+    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+      guard let self else { return }
+      if delay == 0 {
+        self.updateScheduled = false
+      }
+      self.hideSeparator()
+    }
+  }
+
+  private func hideSeparator() {
+    guard superview != nil, window != nil else { return }
+    let cell = enclosingTableViewCell()
+
+    if decoratedCell !== cell {
+      restoreSeparatorInset()
+      decoratedCell = cell
+      originalSeparatorInset = cell?.separatorInset
+      if let cell {
+        separatorInsetObservation = cell.observe(\.separatorInset, options: [.new]) { [weak self] _, _ in
+          self?.scheduleUpdate()
+        }
+      }
+    }
+
+    guard let cell, let originalSeparatorInset, cell.bounds.width > 0 else { return }
+    var hiddenInset = originalSeparatorInset
+    hiddenInset.left = max(hiddenInset.left, cell.bounds.width)
+    if cell.separatorInset != hiddenInset {
+      cell.separatorInset = hiddenInset
+    }
+  }
+
+  private func enclosingTableViewCell() -> UITableViewCell? {
+    var ancestor = superview
+    while let view = ancestor {
+      if let cell = view as? UITableViewCell {
+        return cell
+      }
+      ancestor = view.superview
+    }
+    return nil
+  }
+}
+
+private struct Ios15ListRowSeparatorHiddenProbe: UIViewRepresentable {
+  func makeUIView(context: Context) -> Ios15ListRowSeparatorHiddenView {
+    Ios15ListRowSeparatorHiddenView()
+  }
+
+  func updateUIView(_ uiView: Ios15ListRowSeparatorHiddenView, context: Context) {
+    uiView.scheduleUpdates()
+  }
+
+  static func dismantleUIView(
+    _ uiView: Ios15ListRowSeparatorHiddenView,
+    coordinator: Void
+  ) {
+    uiView.restoreSeparatorInset()
+  }
+}
+#endif
+
+private struct Ios15TopCornerCutouts: Shape {
+  let cornerRadius: CGFloat
+
+  func path(in rect: CGRect) -> Path {
+    let radius = min(max(0, cornerRadius), min(rect.width / 2, rect.height))
+    var path = Path()
+    path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+    path.addLine(to: CGPoint(x: rect.minX + radius, y: rect.minY))
+    path.addQuadCurve(
+      to: CGPoint(x: rect.minX, y: rect.minY + radius),
+      control: CGPoint(x: rect.minX, y: rect.minY)
+    )
+    path.closeSubpath()
+
+    path.move(to: CGPoint(x: rect.maxX, y: rect.minY))
+    path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY + radius))
+    path.addQuadCurve(
+      to: CGPoint(x: rect.maxX - radius, y: rect.minY),
+      control: CGPoint(x: rect.maxX, y: rect.minY)
+    )
+    path.closeSubpath()
+    return path
+  }
+}
+
+internal struct Ios15ListRowTopRoundedBackground: ViewModifier, Record {
+  @Environment(\.layoutDirection) private var layoutDirection
+  @Field var cornerRadius: CGFloat = 10
+  @Field var horizontalInset: CGFloat = 0
+  @Field var leadingInset: CGFloat?
+  @Field var trailingInset: CGFloat?
+  @Field var topInset: CGFloat = 0
+
+  @ViewBuilder
+  func body(content: Content) -> some View {
+#if os(tvOS)
+    content
+#else
+    if #available(iOS 16.0, *) {
+      content
+    } else {
+      let fallbackHorizontalInset = max(0, horizontalInset)
+      let resolvedLeadingInset = max(0, leadingInset ?? fallbackHorizontalInset)
+      let resolvedTrailingInset = max(0, trailingInset ?? fallbackHorizontalInset)
+      let leftInset = layoutDirection == .rightToLeft
+        ? resolvedTrailingInset
+        : resolvedLeadingInset
+      let rightInset = layoutDirection == .rightToLeft
+        ? resolvedLeadingInset
+        : resolvedTrailingInset
+
+      content.overlay(
+        GeometryReader { geometry in
+          Ios15TopCornerCutouts(cornerRadius: cornerRadius)
+            .fill(Color.expoSystemGroupedBackground)
+            .frame(
+              width: geometry.size.width + leftInset + rightInset,
+              height: geometry.size.height + max(0, topInset),
+              alignment: .top
+            )
+            .offset(x: -leftInset, y: -max(0, topInset))
+        }
+          .allowsHitTesting(false)
+      )
+    }
+#endif
+  }
+}
+
+internal struct Ios15ListRowSeparatorHidden: ViewModifier, Record {
+  @ViewBuilder
+  func body(content: Content) -> some View {
+#if os(tvOS)
+    content
+#else
+    if #available(iOS 16.0, *) {
+      content
+    } else {
+      content.background(Ios15ListRowSeparatorHiddenProbe())
+    }
+#endif
   }
 }
 
@@ -1607,6 +2028,14 @@ extension ViewModifierRegistry {
       return try OnTapGestureModifier(from: params, appContext: appContext, eventDispatcher: eventDispatcher)
     }
 
+    register("simultaneousTapGesture") { params, appContext, eventDispatcher in
+      return try SimultaneousTapGestureModifier(
+        from: params,
+        appContext: appContext,
+        eventDispatcher: eventDispatcher
+      )
+    }
+
     register("onLongPressGesture") { params, appContext, eventDispatcher in
       return try OnLongPressGestureModifier(from: params, appContext: appContext, eventDispatcher: eventDispatcher)
     }
@@ -1921,6 +2350,21 @@ extension ViewModifierRegistry {
 
     register("onSubmit") { params, appContext, eventDispatcher in
       return try OnSubmitModifier(from: params, appContext: appContext, eventDispatcher: eventDispatcher)
+    }
+    register("contentMargins") { params, appContext, _ in
+      return try ContentMarginsModifier(from: params, appContext: appContext)
+    }
+
+    register("ios15ListRowTopRoundedBackground") { params, appContext, _ in
+      return try Ios15ListRowTopRoundedBackground(from: params, appContext: appContext)
+    }
+
+    register("ios15ListRowSeparatorHidden") { params, appContext, _ in
+      return try Ios15ListRowSeparatorHidden(from: params, appContext: appContext)
+    }
+
+    register("viewID") { params, appContext, _ in
+      return try ViewIDModifier(from: params, appContext: appContext)
     }
   }
 }

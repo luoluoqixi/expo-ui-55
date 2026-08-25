@@ -8,7 +8,10 @@ export interface RNHostProps extends PrimitiveBaseProps {
      * Can be only set once on mount.
      * @default false
      */
-    matchContents?: boolean;
+    matchContents?: boolean | {
+        vertical?: boolean;
+        horizontal?: boolean;
+    };
     /**
      * The RN View to be hosted.
      */

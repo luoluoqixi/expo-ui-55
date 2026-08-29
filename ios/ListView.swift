@@ -28,6 +28,7 @@ final class ListProps: UIBaseViewProps {
   @Field var compensatesForViewportClipping = false
   @Field var contentInsetAdjustmentBehavior: ListContentInsetAdjustmentBehavior?
   @Field var correctsNestedScrollIndicatorFrame = false
+  @Field var delaysContentTouches = true
   @Field var dismissKeyboardOnTap = false
   @Field var initialScrollAnchor: UnitPointOptions = .center
   @Field var initialScrollTarget: Either<String, Double>?
@@ -93,6 +94,7 @@ struct ListView: ExpoSwiftUI.View {
           automaticallyAdjustsScrollIndicatorInsets: props.automaticallyAdjustsScrollIndicatorInsets ?? true,
           contentInsetAdjustmentBehavior: props.contentInsetAdjustmentBehavior,
           correctsNestedScrollIndicatorFrame: props.correctsNestedScrollIndicatorFrame,
+          delaysContentTouches: props.delaysContentTouches,
           dismissKeyboardOnTap: props.dismissKeyboardOnTap,
           onRefresh: {
             props.onRefresh(["refreshing": true])
@@ -171,6 +173,7 @@ private struct ScrollInsetAdjustmentView: UIViewControllerRepresentable {
   let automaticallyAdjustsScrollIndicatorInsets: Bool
   let contentInsetAdjustmentBehavior: ListContentInsetAdjustmentBehavior?
   let correctsNestedScrollIndicatorFrame: Bool
+  let delaysContentTouches: Bool
   let dismissKeyboardOnTap: Bool
   let onRefresh: () -> Void
   let refreshEnabled: Bool
@@ -186,6 +189,7 @@ private struct ScrollInsetAdjustmentView: UIViewControllerRepresentable {
     view.automaticallyAdjustsScrollIndicatorInsets = automaticallyAdjustsScrollIndicatorInsets
     view.contentInsetAdjustmentBehavior = contentInsetAdjustmentBehavior
     view.correctsNestedScrollIndicatorFrame = correctsNestedScrollIndicatorFrame
+    view.delaysContentTouches = delaysContentTouches
     view.dismissKeyboardOnTap = dismissKeyboardOnTap
     view.onRefresh = onRefresh
     view.refreshEnabled = refreshEnabled
@@ -202,6 +206,7 @@ private struct ScrollInsetAdjustmentView: UIViewControllerRepresentable {
     view.automaticallyAdjustsScrollIndicatorInsets = automaticallyAdjustsScrollIndicatorInsets
     view.contentInsetAdjustmentBehavior = contentInsetAdjustmentBehavior
     view.correctsNestedScrollIndicatorFrame = correctsNestedScrollIndicatorFrame
+    view.delaysContentTouches = delaysContentTouches
     view.dismissKeyboardOnTap = dismissKeyboardOnTap
     view.onRefresh = onRefresh
     view.refreshEnabled = refreshEnabled
@@ -279,6 +284,13 @@ private final class ScrollInsetAdjustmentUIView: UIView, UIGestureRecognizerDele
   var correctsNestedScrollIndicatorFrame = false {
     didSet {
       guard oldValue != correctsNestedScrollIndicatorFrame else { return }
+      scheduleUpdate()
+    }
+  }
+
+  var delaysContentTouches = true {
+    didSet {
+      guard oldValue != delaysContentTouches else { return }
       scheduleUpdate()
     }
   }
@@ -465,6 +477,10 @@ private final class ScrollInsetAdjustmentUIView: UIView, UIGestureRecognizerDele
       scrollView.contentInsetAdjustmentBehavior != contentInsetAdjustmentBehavior.uiKitValue {
       scrollView.contentInsetAdjustmentBehavior = contentInsetAdjustmentBehavior.uiKitValue
       needsLayout = true
+    }
+
+    if scrollView.delaysContentTouches != delaysContentTouches {
+      scrollView.delaysContentTouches = delaysContentTouches
     }
 
     if needsLayout {

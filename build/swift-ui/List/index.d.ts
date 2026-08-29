@@ -24,6 +24,12 @@ export interface ListProps extends CommonViewModifierProps {
      */
     correctsNestedScrollIndicatorFrame?: boolean;
     /**
+     * Whether the backing UIKit scroll view delays delivery of touches to row controls while it
+     * decides whether the gesture is a scroll. Set `false` to show Button pressed states immediately.
+     * @default true
+     */
+    delaysContentTouches?: boolean;
+    /**
      * Dismisses the current keyboard when a non-text-input area of the native list is tapped.
      * The native recognizer does not cancel child control touches.
      * @default false

@@ -6,6 +6,12 @@ import { type CommonViewModifierProps } from '../types';
  */
 export type ContextMenuProps = {
     /**
+     * Whether the context menu can be opened. The trigger remains interactive,
+     * which is useful when it also performs a primary action.
+     * @default true
+     */
+    enabled?: boolean;
+    /**
      * The contents of the context menu.
      * Should include `ContextMenu.Trigger`, `ContextMenu.Items`, and optionally `ContextMenu.Preview`.
      */

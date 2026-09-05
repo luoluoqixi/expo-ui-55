@@ -551,9 +551,21 @@ private final class ScrollInsetAdjustmentUIView: UIView, UIGestureRecognizerDele
   func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
     guard gestureRecognizer === keyboardDismissTapGestureRecognizer else { return true }
 
+    // iOS 15 的 SwiftUI List 由 UITableView 驱动。若让用于空白区域的
+    // 键盘收起手势同时识别 cell 内的 Button 点击，`endEditing` 会与
+    // UITableView 的 deferred row selection 处于同一轮提交，可能触发
+    // SwiftUI 的内部 trap。iOS 16+ 不使用该 UITableView List 路径，
+    // 保持既有行为不变。
+    if #available(iOS 16.0, tvOS 16.0, *) {
+      return true
+    }
+
     var touchedView = touch.view
     while let currentView = touchedView {
       if currentView is UITextField || currentView is UITextView {
+        return false
+      }
+      if currentView is UITableViewCell {
         return false
       }
       if currentView === keyboardDismissScrollView {

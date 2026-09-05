@@ -445,6 +445,14 @@ export const hidden = (hidden: boolean = true) => createModifier('hidden', { hid
 export const disabled = (disabled: boolean = true) => createModifier('disabled', { disabled });
 
 /**
+ * Controls whether a view participates in hit testing.
+ * @param enabled - Whether the view can receive pointer interactions.
+ * @see Official [SwiftUI documentation](https://developer.apple.com/documentation/swiftui/view/allowshittesting(_:)).
+ */
+export const allowsHitTesting = (enabled: boolean = true) =>
+  createModifier('allowsHitTesting', { enabled });
+
+/**
  * Sets the z-index (display order) of a view.
  * @param index - The z-index value.
  * @see Official [SwiftUI documentation](https://developer.apple.com/documentation/swiftui/view/zindex(_:)).
@@ -1293,6 +1301,7 @@ export type BuiltInModifier =
   | ReturnType<typeof tint>
   | ReturnType<typeof hidden>
   | ReturnType<typeof disabled>
+  | ReturnType<typeof allowsHitTesting>
   | ReturnType<typeof zIndex>
   | ReturnType<typeof blur>
   | ReturnType<typeof brightness>

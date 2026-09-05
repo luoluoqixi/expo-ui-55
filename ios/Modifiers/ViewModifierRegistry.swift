@@ -243,6 +243,14 @@ internal struct DisabledModifier: ViewModifier, Record {
   }
 }
 
+internal struct AllowsHitTestingModifier: ViewModifier, Record {
+  @Field var enabled: Bool = true
+
+  func body(content: Content) -> some View {
+    content.allowsHitTesting(enabled)
+  }
+}
+
 internal struct ZIndexModifier: ViewModifier, Record {
   @Field var index: Double = 0
 
@@ -1995,6 +2003,10 @@ extension ViewModifierRegistry {
 
     register("disabled") { params, appContext, _ in
       return try DisabledModifier(from: params, appContext: appContext)
+    }
+
+    register("allowsHitTesting") { params, appContext, _ in
+      return try AllowsHitTestingModifier(from: params, appContext: appContext)
     }
 
     register("zIndex") { params, appContext, _ in

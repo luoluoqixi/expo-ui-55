@@ -411,10 +411,10 @@ export declare const colorInvert: (inverted?: boolean) => ModifierConfig;
 export declare const grayscale: (amount: number) => ModifierConfig;
 /**
  * Sets the button style for button views.
- * @param style - The button style. `'glass'` and `'glassProminent'` are available on iOS 26+ and tvOS 26+ only.
+ * @param style - The button style. `'noPressEffect'` preserves button behavior without pressed-state visuals. `'glass'` and `'glassProminent'` are available on iOS 26+ and tvOS 26+ only.
  * @see Official [SwiftUI documentation](https://developer.apple.com/documentation/swiftui/view/buttonstyle(_:)).
  */
-export declare const buttonStyle: (style: "automatic" | "bordered" | "borderedProminent" | "borderless" | "glass" | "glassProminent" | "plain") => ModifierConfig;
+export declare const buttonStyle: (style: "automatic" | "bordered" | "borderedProminent" | "borderless" | "glass" | "glassProminent" | "noPressEffect" | "plain") => ModifierConfig;
 /**
  * Sets the style for toggles within this view.
  * @param style - The toggle style.

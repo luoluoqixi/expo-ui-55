@@ -503,7 +503,7 @@ export const grayscale = (amount: number) => createModifier('grayscale', { amoun
 
 /**
  * Sets the button style for button views.
- * @param style - The button style. `'glass'` and `'glassProminent'` are available on iOS 26+ and tvOS 26+ only.
+ * @param style - The button style. `'noPressEffect'` preserves button behavior without pressed-state visuals. `'glass'` and `'glassProminent'` are available on iOS 26+ and tvOS 26+ only.
  * @see Official [SwiftUI documentation](https://developer.apple.com/documentation/swiftui/view/buttonstyle(_:)).
  */
 export const buttonStyle = (
@@ -514,6 +514,7 @@ export const buttonStyle = (
     | 'borderless'
     | 'glass'
     | 'glassProminent'
+    | 'noPressEffect'
     | 'plain'
 ) => createModifier('buttonStyle', { style });
 

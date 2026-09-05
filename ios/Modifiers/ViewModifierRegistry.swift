@@ -1828,7 +1828,14 @@ internal enum ButtonStyle: String, Enumerable {
   case borderless
   case glass
   case glassProminent
+  case noPressEffect
   case plain
+}
+
+internal struct NoPressEffectButtonStyle: SwiftUI.ButtonStyle {
+  func makeBody(configuration: Self.Configuration) -> some View {
+    configuration.label
+  }
 }
 
 internal struct ButtonStyleModifier: ViewModifier, Record {
@@ -1866,6 +1873,8 @@ internal struct ButtonStyleModifier: ViewModifier, Record {
       } else {
         content.buttonStyle(.automatic)
       }
+    case .noPressEffect:
+      content.buttonStyle(NoPressEffectButtonStyle())
     case .plain:
       content.buttonStyle(.plain)
     default:

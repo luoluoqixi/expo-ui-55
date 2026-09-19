@@ -30,6 +30,13 @@ export interface ListProps extends CommonViewModifierProps {
      */
     delaysContentTouches?: boolean;
     /**
+     * When this List reappears from a native-stack push, deselect its currently selected
+     * navigation row alongside the interactive pop transition. The row is reselected if
+     * the user cancels the gesture. Enable only for rows that represent navigation.
+     * @default false
+     */
+    clearsNavigationSelectionOnViewWillAppear?: boolean;
+    /**
      * Dismisses the current keyboard when a non-text-input area of the native list is tapped.
      * The native recognizer does not cancel child control touches.
      * @default false
@@ -89,6 +96,11 @@ export interface ListProps extends CommonViewModifierProps {
      * Returns an array of selected item tags.
      */
     onSelectionChange?: (selection: (string | number)[]) => void;
+    /**
+     * Called after a navigation-row deselection finishes successfully. Clear the
+     * corresponding controlled `selection` value in this callback.
+     */
+    onNavigationSelectionCleared?: () => void;
 }
 /**
  * A list component that renders its children using a native SwiftUI `List`.

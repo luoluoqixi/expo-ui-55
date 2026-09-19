@@ -40,6 +40,12 @@ export type ButtonProps = {
    * Target identifier for the button, used for identifying which button was pressed in widgets and live activities.
    */
   target?: string;
+  /**
+   * When this Button is inside a List, selects this row in the native List
+   * before invoking `onPress`. This is intended for navigation rows that keep
+   * their system selection appearance across a push transition.
+   */
+  listSelectionId?: string | number;
 } & CommonViewModifierProps;
 
 type NativeButtonProps = Omit<ButtonProps, 'onPress'> & ViewEvent<'onButtonPress', void>;

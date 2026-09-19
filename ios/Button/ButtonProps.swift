@@ -24,5 +24,8 @@ open class ButtonProps: UIBaseViewProps, Observable {
   @Field public var label: String?
   @Field public var systemImage: String?
   @Field public var role: ButtonRole?
+  /// When rendered inside a List, immediately writes this tag to that List's
+  /// selection binding before dispatching the press event to JS.
+  @Field public var listSelectionId: Either<String, Double>?
   var onButtonPress = EventDispatcher()
 }

@@ -17,6 +17,7 @@ function transformListProps(props: Omit<ListProps, 'children'>): Omit<NativeList
     ...(modifiers ? createViewModifierEventListener(modifiers) : undefined),
     ...restProps,
     onRefresh: () => props?.onRefresh?.(),
+    onNavigationSelectionCleared: () => props?.onNavigationSelectionCleared?.(),
     onSelectionChange: ({ nativeEvent: { selection } }) => props?.onSelectionChange?.(selection),
   };
 }
@@ -54,6 +55,14 @@ export interface ListProps extends CommonViewModifierProps {
    * @default true
    */
   delaysContentTouches?: boolean;
+
+  /**
+   * When this List reappears from a native-stack push, deselect its currently selected
+   * navigation row alongside the interactive pop transition. The row is reselected if
+   * the user cancels the gesture. Enable only for rows that represent navigation.
+   * @default false
+   */
+  clearsNavigationSelectionOnViewWillAppear?: boolean;
 
   /**
    * Dismisses the current keyboard when a non-text-input area of the native list is tapped.
@@ -138,6 +147,12 @@ export interface ListProps extends CommonViewModifierProps {
    * Returns an array of selected item tags.
    */
   onSelectionChange?: (selection: (string | number)[]) => void;
+
+  /**
+   * Called after a navigation-row deselection finishes successfully. Clear the
+   * corresponding controlled `selection` value in this callback.
+   */
+  onNavigationSelectionCleared?: () => void;
 }
 
 /**
@@ -145,9 +160,14 @@ export interface ListProps extends CommonViewModifierProps {
  */
 type SelectItemEvent = ViewEvent<'onSelectionChange', { selection: (string | number)[] }>;
 type RefreshEvent = ViewEvent<'onRefresh', object>;
+type NavigationSelectionClearedEvent = ViewEvent<'onNavigationSelectionCleared', object>;
 
-type NativeListProps = Omit<ListProps, 'onRefresh' | 'onSelectionChange'> &
+type NativeListProps = Omit<
+  ListProps,
+  'onRefresh' | 'onNavigationSelectionCleared' | 'onSelectionChange'
+> &
   RefreshEvent &
+  NavigationSelectionClearedEvent &
   SelectItemEvent & {
     children: React.ReactNode;
   };

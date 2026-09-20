@@ -341,11 +341,20 @@ struct ListView: ExpoSwiftUI.View {
       }
       .onChange(of: props.selection) { newValue in
         let newSelection = Self.getHashableSetFromEither(newValue)
-        selection = newSelection
         if newSelection.isEmpty {
+          // A completed pop can deliver its old controlled-selection clear to
+          // JS one render pass after the user has already touched a new row.
+          // The new row's UIKit touch-down is authoritative; its explicit
+          // clear token or transition callback will release it later.
+          guard !usesUIKitNavigationSelection || !isNavigationSelectionActive else {
+            return
+          }
+          selection = newSelection
           selectionInteraction.selectedNavigationTarget()?.deselect(animated: false)
           selectionInteraction.clearNavigationTarget()
+          return
         }
+        selection = newSelection
       }
       .onChange(of: props.navigationSelectionClearToken) { _ in
         // Navigation-row visual selection is owned by UIKit rather than the

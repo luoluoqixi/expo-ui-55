@@ -9,6 +9,7 @@ public struct Button: ExpoSwiftUI.View {
   @Environment(\.expoListSelectionAction) private var selectListItem
   @Environment(\.expoListSelectionClearAction) private var clearListItem
   @Environment(\.expoListSelectionConfirmAction) private var confirmListItem
+  @State private var selectionTouchState = ListSelectionTouchState()
 
   public init(props: ButtonProps) {
     self.props = props
@@ -40,6 +41,7 @@ public struct Button: ExpoSwiftUI.View {
       // action late even though the row interaction was already cancelled.
       let confirmed = confirmListItem(selectionID)
       guard confirmed else { return }
+      selectionTouchState.confirmCurrentTouch()
     }
     props.onButtonPress()
   }
@@ -49,6 +51,7 @@ public struct Button: ExpoSwiftUI.View {
     if let selectionID = listSelectionID {
       content.background(
         ListSelectionTouchTrackingView(
+          touchState: selectionTouchState,
           onTouchDown: { target in
             // Select the SwiftUI model during the cell recognizer's `.began`,
             // before the automatic Button style releases on touch-up.
@@ -82,24 +85,61 @@ public struct Button: ExpoSwiftUI.View {
 /// tap is implemented by gestures on the cell-hosting view. Observe that host
 /// with a passive UIKit recognizer and select the real collection/table cell.
 private struct ListSelectionTouchTrackingView: UIViewRepresentable {
+  let touchState: ListSelectionTouchState
   let onTouchDown: (ListNavigationSelectionTarget?) -> Void
   let onTouchFinishedWithoutConfirmedPress: () -> Bool
 
   func makeUIView(context: Context) -> ListSelectionTouchTrackingUIView {
     let view = ListSelectionTouchTrackingUIView()
+    view.touchState = touchState
     view.onTouchDown = onTouchDown
     view.onTouchFinishedWithoutConfirmedPress = onTouchFinishedWithoutConfirmedPress
     return view
   }
 
   func updateUIView(_ uiView: ListSelectionTouchTrackingUIView, context: Context) {
+    uiView.touchState = touchState
     uiView.onTouchDown = onTouchDown
     uiView.onTouchFinishedWithoutConfirmedPress = onTouchFinishedWithoutConfirmedPress
     uiView.attachToNearestCellIfNeeded()
   }
 }
 
+/// Bridges the SwiftUI Button action and the passive UIKit touch observer. The
+/// recognizer sees `.ended` before SwiftUI is guaranteed to invoke the action,
+/// so a time-based guess can momentarily clear a valid navigation selection.
+private final class ListSelectionTouchState {
+  private var currentSequence = 0
+  private var confirmedSequence: Int?
+  private var cancelledSequence: Int?
+
+  func beginTouch() -> Int {
+    currentSequence &+= 1
+    confirmedSequence = nil
+    cancelledSequence = nil
+    return currentSequence
+  }
+
+  func confirmCurrentTouch() {
+    confirmedSequence = currentSequence
+  }
+
+  func cancelTouch(_ sequence: Int) {
+    guard currentSequence == sequence else { return }
+    cancelledSequence = sequence
+  }
+
+  func isConfirmed(_ sequence: Int) -> Bool {
+    confirmedSequence == sequence
+  }
+
+  func shouldKeepWaiting(for sequence: Int) -> Bool {
+    currentSequence == sequence && cancelledSequence != sequence && confirmedSequence != sequence
+  }
+}
+
 private final class ListSelectionTouchTrackingUIView: UIView {
+  var touchState: ListSelectionTouchState?
   var onTouchDown: ((ListNavigationSelectionTarget?) -> Void)?
   var onTouchFinishedWithoutConfirmedPress: (() -> Bool)?
 
@@ -174,7 +214,7 @@ private final class ListSelectionTouchTrackingUIView: UIView {
   @objc private func handleCellTouch(_ recognizer: UIGestureRecognizer) {
     switch recognizer.state {
     case .began:
-      touchSequence &+= 1
+      touchSequence = touchState?.beginTouch() ?? touchSequence &+ 1
       competingPanGestureRecognized = false
       registeredTransitionCleanupSequence = nil
       let target = selectContainingListCell()
@@ -184,6 +224,7 @@ private final class ListSelectionTouchTrackingUIView: UIView {
       if !competingPanGestureRecognized,
         hasActiveCompetingPanGesture || hasInteractiveViewControllerTransition {
         competingPanGestureRecognized = true
+        touchState?.cancelTouch(touchSequence)
         _ = onTouchFinishedWithoutConfirmedPress?()
         // An interactive navigation cancellation can restore the cell after
         // this callback. Keep the target until the transition has completely
@@ -196,6 +237,7 @@ private final class ListSelectionTouchTrackingUIView: UIView {
       if competingPanGestureRecognized
         || hasInteractiveViewControllerTransition
         || isTouchOutsideObservedCell(recognizer) {
+        touchState?.cancelTouch(sequence)
         _ = onTouchFinishedWithoutConfirmedPress?()
         let waitsForTransition = registerTransitionCompletionCleanup(sequence: sequence)
         deselectContainingListCell(keepingTarget: true)
@@ -212,10 +254,11 @@ private final class ListSelectionTouchTrackingUIView: UIView {
         guard let self, self.touchSequence == sequence else { return }
         self.activeSelectionTarget?.select()
       }
-      resolveWhetherButtonActuallyPressed(sequence: sequence)
+      maintainSelectionUntilButtonAction(sequence: sequence)
     case .cancelled, .failed:
-      _ = onTouchFinishedWithoutConfirmedPress?()
       let sequence = touchSequence
+      touchState?.cancelTouch(sequence)
+      _ = onTouchFinishedWithoutConfirmedPress?()
       let waitsForTransition = registerTransitionCompletionCleanup(sequence: sequence)
       deselectContainingListCell(keepingTarget: true)
       if !waitsForTransition {
@@ -226,17 +269,29 @@ private final class ListSelectionTouchTrackingUIView: UIView {
     }
   }
 
-  /// SwiftUI does not expose a public Button-cancel callback. Its action can be
-  /// dispatched after sibling UIKit recognizers receive `.ended`, so resolve the
-  /// touch from whether `handlePress` actually confirmed it, not from movement.
-  private func resolveWhetherButtonActuallyPressed(sequence: Int) {
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in
-      guard let self, self.touchSequence == sequence else { return }
-      if self.onTouchFinishedWithoutConfirmedPress?() == true {
-        self.deselectContainingListCell()
-      } else {
-        self.activeSelectionTarget?.select()
-      }
+  /// Keep UIKit's row state authoritative until SwiftUI actually invokes the
+  /// Button action. In particular, do not use a short fixed timeout here: a
+  /// late action can otherwise clear and then recreate selection during the
+  /// first frame of a native-stack push.
+  private func maintainSelectionUntilButtonAction(sequence: Int, framesRemaining: Int = 60) {
+    guard touchSequence == sequence else { return }
+    if touchState?.isConfirmed(sequence) == true {
+      activeSelectionTarget?.select()
+      return
+    }
+    guard touchState?.shouldKeepWaiting(for: sequence) ?? false else { return }
+    guard framesRemaining > 0 else {
+      touchState?.cancelTouch(sequence)
+      _ = onTouchFinishedWithoutConfirmedPress?()
+      deselectContainingListCell()
+      return
+    }
+    activeSelectionTarget?.select()
+    DispatchQueue.main.asyncAfter(deadline: .now() + (1.0 / 60.0)) { [weak self] in
+      self?.maintainSelectionUntilButtonAction(
+        sequence: sequence,
+        framesRemaining: framesRemaining - 1
+      )
     }
   }
 

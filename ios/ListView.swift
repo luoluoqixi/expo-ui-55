@@ -59,32 +59,33 @@ private final class ListScrollPositionStore {
 /// its JS press event. The normal SwiftUI Button pressed appearance otherwise
 /// ends one render pass before a controlled React `selection` prop can arrive.
 struct ListSelectionActionEnvironmentKey: EnvironmentKey {
-  static let defaultValue: (AnyHashable, ListNavigationSelectionTarget?) -> Void = { _, _ in }
+  static let defaultValue: (AnyHashable, ListNavigationSelectionTarget?) -> Int? = { _, _ in nil }
 }
 
 struct ListSelectionClearActionEnvironmentKey: EnvironmentKey {
-  static let defaultValue: (AnyHashable) -> Bool = { _ in false }
+  static let defaultValue: (AnyHashable, Int?) -> Bool = { _, _ in false }
 }
 
 struct ListSelectionConfirmActionEnvironmentKey: EnvironmentKey {
-  static let defaultValue: (AnyHashable) -> Bool = { _ in true }
+  static let defaultValue: (AnyHashable, Int?) -> Bool = { _, _ in true }
 }
 
 extension EnvironmentValues {
-  var expoListSelectionAction: (AnyHashable, ListNavigationSelectionTarget?) -> Void {
+  var expoListSelectionAction: (AnyHashable, ListNavigationSelectionTarget?) -> Int? {
     get { self[ListSelectionActionEnvironmentKey.self] }
     set { self[ListSelectionActionEnvironmentKey.self] = newValue }
   }
 
-  var expoListSelectionClearAction: (AnyHashable) -> Bool {
+  var expoListSelectionClearAction: (AnyHashable, Int?) -> Bool {
     get { self[ListSelectionClearActionEnvironmentKey.self] }
     set { self[ListSelectionClearActionEnvironmentKey.self] = newValue }
   }
 
-  var expoListSelectionConfirmAction: (AnyHashable) -> Bool {
+  var expoListSelectionConfirmAction: (AnyHashable, Int?) -> Bool {
     get { self[ListSelectionConfirmActionEnvironmentKey.self] }
     set { self[ListSelectionConfirmActionEnvironmentKey.self] = newValue }
   }
+
 }
 
 /// Keeps the UIKit cell even if SwiftUI later loses its selected index path.
@@ -120,6 +121,39 @@ final class ListNavigationSelectionTarget {
     }
   }
 
+  /// `UICollectionView.deselectItem(animated:)` creates a background-color
+  /// animation on the cell's hosted selection view. During an interactive pop
+  /// Core Animation pauses that animation at the gesture progress, so changing
+  /// the cell's logical selection state cannot finish it. When a different row
+  /// takes over, terminate only that old target's known animation; do not touch
+  /// the new row or any other visible cells.
+  @discardableResult
+  func finishDeselectBackgroundAnimation() -> Int {
+    func finish(in view: UIView?) -> Int {
+      guard let view else { return 0 }
+      var finished = 0
+      for key in view.layer.animationKeys() ?? [] {
+        guard let animation = view.layer.animation(forKey: key) as? CABasicAnimation,
+          animation.keyPath == "backgroundColor" else {
+          continue
+        }
+        view.layer.removeAnimation(forKey: key)
+        finished += 1
+      }
+      for subview in view.subviews {
+        finished += finish(in: subview)
+      }
+      return finished
+    }
+    if let tableView {
+      return finish(in: tableView.cellForRow(at: indexPath))
+    }
+    if let collectionView {
+      return finish(in: collectionView.cellForItem(at: indexPath))
+    }
+    return 0
+  }
+
   func select() {
     if let tableView {
       tableView.selectRow(at: indexPath, animated: false, scrollPosition: .none)
@@ -141,6 +175,17 @@ final class ListNavigationSelectionTarget {
     self.collectionView === collectionView && self.indexPath == indexPath
   }
 
+  func matches(_ other: ListNavigationSelectionTarget?) -> Bool {
+    guard let other else { return false }
+    if let tableView {
+      return other.matches(tableView, indexPath: indexPath)
+    }
+    if let collectionView {
+      return other.matches(collectionView, indexPath: indexPath)
+    }
+    return false
+  }
+
   /// Restore the persistent navigation selection after an interactive pop is
   /// cancelled. A restored row is selected, but it is no longer being touched.
   /// Keeping `isHighlighted` set here leaves a non-interactive highlight above
@@ -157,6 +202,26 @@ final class ListNavigationSelectionTarget {
       collectionView.cellForItem(at: indexPath)?.isHighlighted = false
     }
   }
+
+  /// A saved target can outlive a SwiftUI cell recreation. Only restore it
+  /// when UIKit no longer owns an active visual selection for that index path.
+  /// Re-selecting an already selected cell creates a second collection-view
+  /// selection transaction, which can overlap a rapid push from the returning
+  /// screen.
+  func hasActiveVisualSelection() -> Bool {
+    if let tableView {
+      return tableView.indexPathForSelectedRow == indexPath ||
+        tableView.cellForRow(at: indexPath)?.isSelected == true ||
+        tableView.cellForRow(at: indexPath)?.isHighlighted == true
+    }
+    if let collectionView {
+      return collectionView.indexPathsForSelectedItems?.contains(indexPath) == true ||
+        collectionView.cellForItem(at: indexPath)?.isSelected == true ||
+        collectionView.cellForItem(at: indexPath)?.isHighlighted == true
+    }
+    return false
+  }
+
 }
 
 private final class ListSelectionInteractionState {
@@ -164,34 +229,110 @@ private final class ListSelectionInteractionState {
   private var confirmedSelectionID: AnyHashable?
   private var cancelledSelectionID: AnyHashable?
   private var navigationSelectionTarget: ListNavigationSelectionTarget?
+  private var navigationSelectionTargets: [Int: ListNavigationSelectionTarget] = [:]
   private var isNavigationDeselectInProgress = false
+  private var onNavigationSelectionBegan: (() -> Void)?
+  private var nextNavigationSelectionSession = 0
+  private var activeNavigationSelectionSession: Int?
+  private var confirmedNavigationSelectionSession: Int?
 
-  func begin(_ selectionID: AnyHashable, target: ListNavigationSelectionTarget? = nil) {
-    if let previousTarget = navigationSelectionTarget {
-      previousTarget.deselect(animated: false)
-    }
-    pendingSelectionID = selectionID
-    confirmedSelectionID = nil
-    cancelledSelectionID = nil
-    navigationSelectionTarget = target
+  /// The navigation transition observer must be attached while the cell is
+  /// still touched, but registering it must not write SwiftUI state. A state
+  /// write here creates a List reconciliation in the same transaction as the
+  /// React Navigation push.
+  func setNavigationSelectionBeganHandler(_ handler: @escaping () -> Void) {
+    onNavigationSelectionBegan = handler
   }
 
-  func confirm(_ selectionID: AnyHashable) -> Bool {
-    guard cancelledSelectionID != selectionID else { return false }
-    guard pendingSelectionID == selectionID else { return true }
+  func begin(_ selectionID: AnyHashable, target: ListNavigationSelectionTarget? = nil) -> Int {
+    nextNavigationSelectionSession &+= 1
+    let session = nextNavigationSelectionSession
+    if let previousTarget = navigationSelectionTarget {
+      // A second touch can arrive after the first action was confirmed but
+      // before React Navigation starts the push. Preserve that selection only
+      // for a repeat touch on the same cell. A different target must release
+      // the old cell synchronously, otherwise it can flash in the new push's
+      // first frame.
+      if confirmedNavigationSelectionSession == nil || !previousTarget.matches(target) {
+        if !previousTarget.matches(target) {
+          _ = previousTarget.finishDeselectBackgroundAnimation()
+        }
+        previousTarget.deselect(animated: false)
+        DispatchQueue.main.async { [weak self] in
+          guard let self,
+            self.activeNavigationSelectionSession == session,
+            self.navigationSelectionTarget?.matches(target) == true else {
+            return
+          }
+          // A deselection animation from the previous pop may still have a
+          // pending UIKit cell update. Reassert the different-target handoff
+          // on the next main-loop turn without touching the new target.
+          previousTarget.deselect(animated: false)
+        }
+      }
+    }
+    pendingSelectionID = selectionID
+    if confirmedNavigationSelectionSession == nil {
+      confirmedSelectionID = nil
+    }
+    cancelledSelectionID = nil
+    navigationSelectionTarget = target
+    if let target {
+      navigationSelectionTargets[session] = target
+    }
+    activeNavigationSelectionSession = session
+    if target != nil {
+      onNavigationSelectionBegan?()
+    }
+    return session
+  }
+
+  func confirm(_ selectionID: AnyHashable, session: Int?) -> Bool {
+    // A navigation Button action is meaningful only when its passive touch
+    // observer reached `.ended` and supplied the matching native session. A
+    // late SwiftUI action without that token belongs to an older touch; never
+    // let it accidentally confirm whichever row is currently active.
+    guard let session else { return false }
+    guard activeNavigationSelectionSession == session else {
+      return false
+    }
+    guard cancelledSelectionID != selectionID else {
+      return false
+    }
+    guard pendingSelectionID == selectionID else {
+      confirmedSelectionID = selectionID
+      confirmedNavigationSelectionSession = session
+      return true
+    }
     confirmedSelectionID = selectionID
+    confirmedNavigationSelectionSession = session
     cancelledSelectionID = nil
     return true
   }
 
-  func shouldClearUnconfirmedSelection(_ selectionID: AnyHashable) -> Bool {
+  func shouldClearUnconfirmedSelection(_ selectionID: AnyHashable, session: Int?) -> Bool {
+    guard session == nil || activeNavigationSelectionSession == session else { return false }
+    if let session,
+      let confirmedSession = confirmedNavigationSelectionSession,
+      confirmedSession != session {
+      // A new press can begin while the previous pop is still completing. It
+      // immediately supersedes that old transition session, so its final
+      // appearance callback cannot deselect the row currently under the new
+      // finger. If this new press is then cancelled, hand ownership back to
+      // the old confirmed session; its normal return cleanup can release the
+      // previous visual selection.
+      pendingSelectionID = nil
+      cancelledSelectionID = selectionID
+      activeNavigationSelectionSession = confirmedSession
+      navigationSelectionTarget = navigationSelectionTargets[confirmedSession]
+      navigationSelectionTargets.removeValue(forKey: session)
+      return true
+    }
     // Cancellation must remain idempotent for the lifetime of this touch.
     // An interactive navigation cancellation can write the id back into the
     // List binding after the first clear, so the transition completion needs
     // to be able to clear the same cancelled interaction again.
-    if cancelledSelectionID == selectionID {
-      return true
-    }
+    if cancelledSelectionID == selectionID { return true }
     guard pendingSelectionID == selectionID else { return false }
     pendingSelectionID = nil
     guard confirmedSelectionID != selectionID else { return false }
@@ -199,12 +340,29 @@ private final class ListSelectionInteractionState {
     return true
   }
 
-  func shouldRestoreNavigationSelection() -> Bool {
-    cancelledSelectionID == nil
+  func shouldRestoreNavigationSelection(session: Int?) -> Bool {
+    guard isNavigationSelectionSessionCurrent(session) else { return false }
+    return cancelledSelectionID == nil
+  }
+
+  func navigationSelectionSessionForTransition() -> Int? {
+    // A just-begun touch wins over a previously confirmed navigation. This is
+    // essential when the user taps the source row before an old pop's final
+    // appearance callback runs: that callback belongs to the old session and
+    // must not deselect the cell beneath the new finger.
+    activeNavigationSelectionSession ?? confirmedNavigationSelectionSession
+  }
+
+  func isNavigationSelectionSessionCurrent(_ session: Int?) -> Bool {
+    guard let session else { return false }
+    return navigationSelectionSessionForTransition() == session
   }
 
   func selectedNavigationTarget() -> ListNavigationSelectionTarget? {
-    navigationSelectionTarget
+    guard let session = navigationSelectionSessionForTransition() else {
+      return navigationSelectionTarget
+    }
+    return navigationSelectionTargets[session] ?? navigationSelectionTarget
   }
 
   func beginNavigationDeselect() {
@@ -224,13 +382,17 @@ private final class ListSelectionInteractionState {
     return selection.subtracting([cancelledSelectionID])
   }
 
-  func clearNavigationTarget() {
+  func clearNavigationTarget(session: Int? = nil) {
+    if let session, !isNavigationSelectionSessionCurrent(session) { return }
     pendingSelectionID = nil
     confirmedSelectionID = nil
+    confirmedNavigationSelectionSession = nil
+    activeNavigationSelectionSession = nil
     // Keep the cancelled id until the next `begin`. SwiftUI can write the
     // cancelled List selection back while an interactive transition restores
     // its source hierarchy, even after the UIKit target has been discarded.
     navigationSelectionTarget = nil
+    navigationSelectionTargets.removeAll()
   }
 }
 
@@ -239,7 +401,6 @@ struct ListView: ExpoSwiftUI.View {
   @State private var selection = Set<AnyHashable>()
   @State private var hasScrolledToInitialTarget = false
   @State private var selectionInteraction = ListSelectionInteractionState()
-  @State private var isNavigationSelectionActive = false
 
   @ViewBuilder
   var body: some View {
@@ -284,44 +445,39 @@ struct ListView: ExpoSwiftUI.View {
           onRefresh: {
             props.onRefresh(["refreshing": true])
           },
-          onNavigationSelectionConfirmed: {
+          onNavigationSelectionConfirmed: { session in
+            guard selectionInteraction.isNavigationSelectionSessionCurrent(session) else { return }
             props.onNavigationSelectionConfirmed([:])
           },
-          onNavigationSelectionCleared: {
-            // Clear the native binding in the same transition-coordinator callback.
-            // Waiting for the event to round-trip through React lets SwiftUI
-            // reselect the cell after a completed pop, especially after a prior
-            // interactive cancellation.
+          onNavigationSelectionCleared: { session in
+            guard selectionInteraction.isNavigationSelectionSessionCurrent(session) else { return }
             selectionInteraction.finishNavigationDeselect()
-            selection = []
             selectionInteraction.selectedNavigationTarget()?.deselect(animated: false)
-            selectionInteraction.clearNavigationTarget()
-            isNavigationSelectionActive = false
+            selectionInteraction.clearNavigationTarget(session: session)
             props.onNavigationSelectionCleared([:])
           },
           onNavigationSelectionDeselecting: {
-            // UIKit owns the interactive visual animation; the binding must stop
-            // asserting the selected value before that animation starts. Keep a
-            // separate transition flag because SwiftUI can send another onAppear
-            // while restoring a previously cancelled native-stack transition.
             selectionInteraction.beginNavigationDeselect()
-            selection = []
           },
           onNavigationSelectionRestored: {
-            // UIKit reapplies the selected cell when an interactive pop is
-            // cancelled. Keep SwiftUI's binding in sync so a second gesture
-            // can animate that same cell and a later completed pop clears it.
             selectionInteraction.finishNavigationDeselect()
-            selection = Self.getHashableSetFromEither(props.selection)
           },
           selectedNavigationTarget: {
             selectionInteraction.selectedNavigationTarget()
           },
-          shouldRestoreNavigationSelection: {
-            selectionInteraction.shouldRestoreNavigationSelection()
+          navigationSelectionSessionForTransition: {
+            selectionInteraction.navigationSelectionSessionForTransition()
           },
-          controlledNavigationSelectionIsEmpty:
-            !usesUIKitNavigationSelection || !isNavigationSelectionActive,
+          shouldHandleNavigationSelectionSession: { session in
+            selectionInteraction.isNavigationSelectionSessionCurrent(session)
+          },
+          shouldRestoreNavigationSelection: { session in
+            selectionInteraction.isNavigationSelectionSessionCurrent(session) &&
+              selectionInteraction.shouldRestoreNavigationSelection(session: session)
+          },
+          registerNavigationSelectionObserver: { handler in
+            selectionInteraction.setNavigationSelectionBeganHandler(handler)
+          },
           refreshEnabled: props.refreshEnabled,
           refreshable: props.refreshable,
           refreshing: props.refreshing,
@@ -331,24 +487,18 @@ struct ListView: ExpoSwiftUI.View {
         )
       }
       .onAppear {
-        // A second interactive pop after a cancellation can make SwiftUI report
-        // onAppear after UIKit has already started its coordinated deselection.
-        // Reasserting the controlled id at that point masks the interactive fade.
-        if selectionInteraction.shouldSyncControlledSelectionOnAppear() {
+        // Navigation selection is not a SwiftUI List selection. Keeping its
+        // value out of this binding avoids an implicit List transaction during
+        // a native-stack push.
+        if !usesUIKitNavigationSelection && selectionInteraction.shouldSyncControlledSelectionOnAppear() {
           selection = Self.getHashableSetFromEither(props.selection)
         }
         scrollToInitialTarget(proxy)
       }
       .onChange(of: props.selection) { newValue in
+        guard !usesUIKitNavigationSelection else { return }
         let newSelection = Self.getHashableSetFromEither(newValue)
         if newSelection.isEmpty {
-          // A completed pop can deliver its old controlled-selection clear to
-          // JS one render pass after the user has already touched a new row.
-          // The new row's UIKit touch-down is authoritative; its explicit
-          // clear token or transition callback will release it later.
-          guard !usesUIKitNavigationSelection || !isNavigationSelectionActive else {
-            return
-          }
           selection = newSelection
           selectionInteraction.selectedNavigationTarget()?.deselect(animated: false)
           selectionInteraction.clearNavigationTarget()
@@ -357,18 +507,15 @@ struct ListView: ExpoSwiftUI.View {
         selection = newSelection
       }
       .onChange(of: props.navigationSelectionClearToken) { _ in
-        // Navigation-row visual selection is owned by UIKit rather than the
-        // SwiftUI List binding. JS only changes this token for an explicit
-        // cancellation or auto-clear, never in the same update as a push.
         selectionInteraction.selectedNavigationTarget()?.deselect(animated: false)
         selectionInteraction.clearNavigationTarget()
-        isNavigationSelectionActive = false
       }
       .onChange(of: props.initialScrollTarget) { _ in
         hasScrolledToInitialTarget = false
         scrollToInitialTarget(proxy)
       }
       .onChange(of: selection) { newSelection in
+        guard !usesUIKitNavigationSelection else { return }
         let filteredSelection = selectionInteraction.removingCancelledSelection(
           from: newSelection
         )
@@ -391,8 +538,17 @@ struct ListView: ExpoSwiftUI.View {
 
   @ViewBuilder
   private var selectionList: some View {
-    List(selection: $selection) {
-      navigationSelectionChildren
+    if usesUIKitNavigationSelection {
+      // Navigation rows set the concrete UIKit cell state themselves. Do not
+      // install SwiftUI's List selection coordinator: it observes that same
+      // cell and can commit a source-List update in the push transaction.
+      List {
+        navigationSelectionChildren
+      }
+    } else {
+      List(selection: $selection) {
+        navigationSelectionChildren
+      }
     }
   }
 
@@ -400,20 +556,13 @@ struct ListView: ExpoSwiftUI.View {
     Children()
       .environment(\.expoListSelectionAction) { itemID, target in
         selectionInteraction.begin(itemID, target: target)
-        // Register the passive native-stack pan observer before touch-up. This
-        // does not write the List's selection binding or change React props,
-        // so it cannot reconcile the source List in the push transaction.
-        isNavigationSelectionActive = true
       }
-      .environment(\.expoListSelectionClearAction) { itemID in
-        let shouldClear = selectionInteraction.shouldClearUnconfirmedSelection(itemID)
-        if shouldClear && selection == [itemID] {
-          selection = []
-        }
+      .environment(\.expoListSelectionClearAction) { itemID, session in
+        let shouldClear = selectionInteraction.shouldClearUnconfirmedSelection(itemID, session: session)
         return shouldClear
       }
-      .environment(\.expoListSelectionConfirmAction) { itemID in
-        selectionInteraction.confirm(itemID)
+      .environment(\.expoListSelectionConfirmAction) { itemID, session in
+        selectionInteraction.confirm(itemID, session: session)
       }
   }
 
@@ -470,13 +619,15 @@ private struct ScrollInsetAdjustmentView: UIViewControllerRepresentable {
   let delaysContentTouches: Bool
   let dismissKeyboardOnTap: Bool
   let onRefresh: () -> Void
-  let onNavigationSelectionConfirmed: () -> Void
-  let onNavigationSelectionCleared: () -> Void
+  let onNavigationSelectionConfirmed: (Int?) -> Void
+  let onNavigationSelectionCleared: (Int?) -> Void
   let onNavigationSelectionDeselecting: () -> Void
   let onNavigationSelectionRestored: () -> Void
   let selectedNavigationTarget: () -> ListNavigationSelectionTarget?
-  let shouldRestoreNavigationSelection: () -> Bool
-  let controlledNavigationSelectionIsEmpty: Bool
+  let navigationSelectionSessionForTransition: () -> Int?
+  let shouldHandleNavigationSelectionSession: (Int?) -> Bool
+  let shouldRestoreNavigationSelection: (Int?) -> Bool
+  let registerNavigationSelectionObserver: (@escaping () -> Void) -> Void
   let refreshEnabled: Bool
   let refreshable: Bool
   let refreshing: Bool
@@ -499,8 +650,12 @@ private struct ScrollInsetAdjustmentView: UIViewControllerRepresentable {
     view.onNavigationSelectionDeselecting = onNavigationSelectionDeselecting
     view.onNavigationSelectionRestored = onNavigationSelectionRestored
     view.selectedNavigationTarget = selectedNavigationTarget
+    view.navigationSelectionSessionForTransition = navigationSelectionSessionForTransition
+    view.shouldHandleNavigationSelectionSession = shouldHandleNavigationSelectionSession
     view.shouldRestoreNavigationSelection = shouldRestoreNavigationSelection
-    view.controlledNavigationSelectionIsEmpty = controlledNavigationSelectionIsEmpty
+    registerNavigationSelectionObserver { [weak view] in
+      view?.refreshNavigationTransitionGestureObservation()
+    }
     view.refreshEnabled = refreshEnabled
     view.refreshable = refreshable
     view.refreshing = refreshing
@@ -525,8 +680,12 @@ private struct ScrollInsetAdjustmentView: UIViewControllerRepresentable {
     view.onNavigationSelectionDeselecting = onNavigationSelectionDeselecting
     view.onNavigationSelectionRestored = onNavigationSelectionRestored
     view.selectedNavigationTarget = selectedNavigationTarget
+    view.navigationSelectionSessionForTransition = navigationSelectionSessionForTransition
+    view.shouldHandleNavigationSelectionSession = shouldHandleNavigationSelectionSession
     view.shouldRestoreNavigationSelection = shouldRestoreNavigationSelection
-    view.controlledNavigationSelectionIsEmpty = controlledNavigationSelectionIsEmpty
+    registerNavigationSelectionObserver { [weak view] in
+      view?.refreshNavigationTransitionGestureObservation()
+    }
     view.refreshEnabled = refreshEnabled
     view.refreshable = refreshable
     view.refreshing = refreshing
@@ -562,6 +721,10 @@ private final class ScrollInsetAdjustmentViewController: UIViewController {
       transitionCoordinator,
       animated: animated
     )
+  }
+
+  override func viewWillDisappear(_ animated: Bool) {
+    super.viewWillDisappear(animated)
   }
 
   override func viewDidDisappear(_ animated: Bool) {
@@ -659,31 +822,14 @@ private final class ScrollInsetAdjustmentUIView: UIView, UIGestureRecognizerDele
   }
 
   var onRefresh: (() -> Void)?
-  var onNavigationSelectionConfirmed: (() -> Void)?
-  var onNavigationSelectionCleared: (() -> Void)?
+  var onNavigationSelectionConfirmed: ((Int?) -> Void)?
+  var onNavigationSelectionCleared: ((Int?) -> Void)?
   var onNavigationSelectionDeselecting: (() -> Void)?
   var onNavigationSelectionRestored: (() -> Void)?
   var selectedNavigationTarget: (() -> ListNavigationSelectionTarget?)?
-  var shouldRestoreNavigationSelection: (() -> Bool)?
-
-  /// SwiftUI's `onChange` can coalesce a controlled `[id] -> []` update with
-  /// the List's own selection write. Track that prop edge in the UIKit bridge
-  /// as well so a non-navigating tap always releases the real cell selected by
-  /// `ListSelectionTouchTrackingUIView`.
-  var controlledNavigationSelectionIsEmpty = true {
-    didSet {
-      if !controlledNavigationSelectionIsEmpty {
-        refreshNavigationTransitionGestureObservation()
-      }
-      guard clearsNavigationSelectionOnViewWillAppear,
-        controlledNavigationSelectionIsEmpty,
-        !oldValue else {
-        return
-      }
-      clearNavigationSelectionImmediately()
-      stopNavigationTransitionGestureObservation()
-    }
-  }
+  var navigationSelectionSessionForTransition: (() -> Int?)?
+  var shouldHandleNavigationSelectionSession: ((Int?) -> Bool)?
+  var shouldRestoreNavigationSelection: ((Int?) -> Bool)?
 
   var scrollPositionRestoreToken = 0 {
     didSet {
@@ -732,6 +878,9 @@ private final class ScrollInsetAdjustmentUIView: UIView, UIGestureRecognizerDele
   private weak var navigationSelectionViewController: UIViewController?
   private var navigationTransitionGestureRecognizers: [UIGestureRecognizer] = []
   private var activeNavigationTransitionIdentifier: ObjectIdentifier?
+  private var navigationSelectionTransitionIdentifier: ObjectIdentifier?
+  private var navigationSelectionTransitionSession: Int?
+  private var navigationSelectionTransitionTarget: ListNavigationSelectionTarget?
   private var skipsNextNavigationSelectionFinalization = false
 
   /// UIKit owns the cell-selection visual state. Deselecting its actual table or
@@ -743,6 +892,9 @@ private final class ScrollInsetAdjustmentUIView: UIView, UIGestureRecognizerDele
   ) {
     guard clearsNavigationSelectionOnViewWillAppear else { return }
     guard #available(iOS 16.0, tvOS 16.0, *) else { return }
+    let session = navigationSelectionSession(for: coordinator)
+    guard shouldHandleNavigationSelectionSession?(session) == true else { return }
+    let transitionTarget = navigationSelectionTransitionTarget
     let navigationRows = selectedNavigationRows
     guard !navigationRows.isEmpty else { return }
 
@@ -756,12 +908,18 @@ private final class ScrollInsetAdjustmentUIView: UIView, UIGestureRecognizerDele
 
     let deselect = { [weak self] in
       guard let self else { return }
+      guard self.shouldHandleNavigationSelectionSession?(session) == true else { return }
       // React Native Screens may recreate the source List cell while it is
       // covered. Restore the saved cell immediately before UIKit starts its
-      // coordinated deselection so the interactive transition always has a
-      // real selected background to scrub from.
+      // coordinated deselection only when UIKit lost its native state. Calling
+      // `select` on an already-selected source starts another collection-view
+      // selection transaction; that transaction can remain visible when a new
+      // item is pressed before this pop completes.
       for navigationRow in navigationRows {
-        self.selectNavigationRow(navigationRow)
+        if !self.hasActiveVisualSelection(navigationRow) {
+          self.selectNavigationRow(navigationRow)
+        } else {
+        }
       }
       for navigationRow in navigationRows {
         self.deselectNavigationRow(navigationRow, animated: shouldAnimate)
@@ -775,7 +933,7 @@ private final class ScrollInsetAdjustmentUIView: UIView, UIGestureRecognizerDele
 
     guard let coordinator else {
       deselect()
-      onNavigationSelectionCleared?()
+      onNavigationSelectionCleared?(session)
       return
     }
 
@@ -784,18 +942,31 @@ private final class ScrollInsetAdjustmentUIView: UIView, UIGestureRecognizerDele
     }, completion: { [weak self] context in
       guard let self else { return }
       self.activeNavigationTransitionIdentifier = nil
+      let isCurrentSession = self.shouldHandleNavigationSelectionSession?(session) == true
       if context.isCancelled {
+        // A newer press owns JS state, but this old transition can still leave
+        // its source cell selected after UIKit restores its hierarchy. Release
+        // only the target captured when this transition began; never inspect
+        // live rows here because they may now belong to the newer press.
+        guard isCurrentSession else {
+          self.deselectSupersededTransitionTarget(transitionTarget)
+          return
+        }
         self.skipsNextNavigationSelectionFinalization = true
         // The passive touch observer resolves whether SwiftUI's Button action
         // actually fired 30ms after touch-up. Wait for that result before
         // deciding whether a cancelled transition should restore this row.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
           guard let self else { return }
-          if self.shouldRestoreNavigationSelection?() == false {
+          guard self.shouldHandleNavigationSelectionSession?(session) == true else {
+            self.deselectSupersededTransitionTarget(transitionTarget)
+            return
+          }
+          if self.shouldRestoreNavigationSelection?(session) == false {
             for navigationRow in navigationRows + self.visibleNavigationRows {
               self.deselectNavigationRow(navigationRow, animated: false)
             }
-            self.onNavigationSelectionCleared?()
+            self.onNavigationSelectionCleared?(session)
             return
           }
           // UIKit can finish its own cancellation bookkeeping immediately after
@@ -804,6 +975,10 @@ private final class ScrollInsetAdjustmentUIView: UIView, UIGestureRecognizerDele
             self.selectNavigationRow(navigationRow)
           }
           DispatchQueue.main.async {
+            guard self.shouldHandleNavigationSelectionSession?(session) == true else {
+              self.deselectSupersededTransitionTarget(transitionTarget)
+              return
+            }
             for navigationRow in navigationRows {
               self.selectNavigationRow(navigationRow)
             }
@@ -814,10 +989,31 @@ private final class ScrollInsetAdjustmentUIView: UIView, UIGestureRecognizerDele
         self.skipsNextNavigationSelectionFinalization = false
         // SwiftUI may reconcile the cell once more during the last transition
         // frame. Make the completed state authoritative before notifying React.
-        self.deselectNavigationRowsAfterSystemReconciliation(navigationRows)
-        self.onNavigationSelectionCleared?()
+        guard isCurrentSession else {
+          self.deselectSupersededTransitionTarget(transitionTarget)
+          return
+        }
+        self.deselectNavigationRowsAfterSystemReconciliation(
+          navigationRows,
+          session: session,
+          transitionTarget: transitionTarget
+        )
+        self.onNavigationSelectionCleared?(session)
       }
     })
+  }
+
+  private func navigationSelectionSession(
+    for coordinator: UIViewControllerTransitionCoordinator?
+  ) -> Int? {
+    let identifier = coordinator.map { ObjectIdentifier($0 as AnyObject) }
+    if navigationSelectionTransitionSession == nil {
+      navigationSelectionTransitionIdentifier = identifier
+      navigationSelectionTransitionSession = navigationSelectionSessionForTransition?()
+      navigationSelectionTransitionTarget = selectedNavigationTarget?()
+    } else {
+    }
+    return navigationSelectionTransitionSession
   }
 
   /// `UIViewControllerRepresentable` children do not receive another
@@ -829,7 +1025,7 @@ private final class ScrollInsetAdjustmentUIView: UIView, UIGestureRecognizerDele
   func refreshNavigationTransitionGestureObservation() {
 #if !os(tvOS)
     guard clearsNavigationSelectionOnViewWillAppear,
-      !controlledNavigationSelectionIsEmpty else {
+      selectedNavigationTarget?() != nil else {
       return
     }
     guard let viewController = navigationSelectionViewController ?? findContentViewController(),
@@ -929,18 +1125,42 @@ private final class ScrollInsetAdjustmentUIView: UIView, UIGestureRecognizerDele
     guard #available(iOS 16.0, tvOS 16.0, *) else { return }
     if skipsNextNavigationSelectionFinalization {
       skipsNextNavigationSelectionFinalization = false
+      // A cancelled interactive pop retains its captured session until the
+      // source screen has appeared again. It must not leak into the next pop:
+      // a new tap can have acquired a newer session while this screen was
+      // returning, and reusing the old session makes the following interactive
+      // deselection look stale (so its darkening animation never starts).
+      navigationSelectionTransitionIdentifier = nil
+      navigationSelectionTransitionSession = nil
+      navigationSelectionTransitionTarget = nil
       return
     }
-    clearNavigationSelectionImmediately()
+    let session = navigationSelectionTransitionSession
+    let transitionTarget = navigationSelectionTransitionTarget
+    guard shouldHandleNavigationSelectionSession?(session) == true else {
+      navigationSelectionTransitionIdentifier = nil
+      navigationSelectionTransitionSession = nil
+      navigationSelectionTransitionTarget = nil
+      deselectSupersededTransitionTarget(transitionTarget)
+      return
+    }
+    clearNavigationSelectionImmediately(session: session)
     // iOS can perform one final SwiftUI cell reconciliation after the child
     // controller's appearance callback. Inspect the live cells again after
     // that pass so a completed pop following a cancelled pop cannot reselect it.
     DispatchQueue.main.async { [weak self] in
       guard let self else { return }
+      guard self.shouldHandleNavigationSelectionSession?(session) == true else {
+        self.deselectSupersededTransitionTarget(transitionTarget)
+        return
+      }
       for navigationRow in self.selectedNavigationRows {
         self.deselectNavigationRow(navigationRow, animated: false)
       }
     }
+    navigationSelectionTransitionIdentifier = nil
+    navigationSelectionTransitionSession = nil
+    navigationSelectionTransitionTarget = nil
   }
 
   /// A source screen disappearing after a push is the native confirmation that
@@ -951,14 +1171,22 @@ private final class ScrollInsetAdjustmentUIView: UIView, UIGestureRecognizerDele
       selectedNavigationTarget?() != nil else {
       return
     }
-    onNavigationSelectionConfirmed?()
+    let session = navigationSelectionSessionForTransition?()
+    guard shouldHandleNavigationSelectionSession?(session) == true else { return }
+    onNavigationSelectionConfirmed?(session)
   }
 
   private func deselectNavigationRowsAfterSystemReconciliation(
-    _ transitionRows: [NavigationRowSelection]
+    _ transitionRows: [NavigationRowSelection],
+    session: Int?,
+    transitionTarget: ListNavigationSelectionTarget?
   ) {
     let clear = { [weak self] in
       guard let self else { return }
+      guard self.shouldHandleNavigationSelectionSession?(session) == true else {
+        self.deselectSupersededTransitionTarget(transitionTarget)
+        return
+      }
       for navigationRow in transitionRows + self.visibleNavigationRows {
         self.deselectNavigationRow(navigationRow, animated: false)
       }
@@ -969,13 +1197,35 @@ private final class ScrollInsetAdjustmentUIView: UIView, UIGestureRecognizerDele
     DispatchQueue.main.async(execute: clear)
   }
 
-  private func clearNavigationSelectionImmediately() {
+  /// A newer session must prevent an old transition from clearing its JS
+  /// selection, but UIKit still needs the old transition's source cell to be
+  /// finalized. This method is deliberately limited to the immutable target
+  /// captured at transition start, never the current visible selection.
+  private func deselectSupersededTransitionTarget(_ target: ListNavigationSelectionTarget?) {
+    guard let target else { return }
+    guard selectedNavigationTarget?()?.matches(target) != true else {
+      return
+    }
+    let clear = { [weak self, weak target] in
+      guard let self, let target else { return }
+      guard self.selectedNavigationTarget?()?.matches(target) != true else { return }
+      _ = target.finishDeselectBackgroundAnimation()
+      target.deselect(animated: false)
+    }
+    clear()
+    // UIKit can reconcile the restored source hierarchy after coordinator
+    // completion. A second target-only pass cannot affect the newer row.
+    DispatchQueue.main.async(execute: clear)
+  }
+
+  private func clearNavigationSelectionImmediately(session: Int?) {
+    guard shouldHandleNavigationSelectionSession?(session) == true else { return }
     let navigationRows = selectedNavigationRows
     for navigationRow in navigationRows {
       deselectNavigationRow(navigationRow, animated: false)
     }
     guard !navigationRows.isEmpty else { return }
-    onNavigationSelectionCleared?()
+    onNavigationSelectionCleared?(session)
   }
 
   private enum NavigationRowSelection {
@@ -1095,6 +1345,21 @@ private final class ScrollInsetAdjustmentUIView: UIView, UIGestureRecognizerDele
       }
     case let .target(target):
       target.deselect(animated: animated)
+    }
+  }
+
+  private func hasActiveVisualSelection(_ navigationRow: NavigationRowSelection) -> Bool {
+    switch navigationRow {
+    case let .table(tableView, indexPath):
+      return tableView.indexPathForSelectedRow == indexPath ||
+        tableView.cellForRow(at: indexPath)?.isSelected == true ||
+        tableView.cellForRow(at: indexPath)?.isHighlighted == true
+    case let .collection(collectionView, indexPath):
+      return collectionView.indexPathsForSelectedItems?.contains(indexPath) == true ||
+        collectionView.cellForItem(at: indexPath)?.isSelected == true ||
+        collectionView.cellForItem(at: indexPath)?.isHighlighted == true
+    case let .target(target):
+      return target.hasActiveVisualSelection()
     }
   }
 

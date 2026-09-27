@@ -248,15 +248,13 @@ private final class ListSelectionInteractionState {
     nextNavigationSelectionSession &+= 1
     let session = nextNavigationSelectionSession
     if let previousTarget = navigationSelectionTarget {
-      // A second touch can arrive after the first action was confirmed but
-      // before React Navigation starts the push. Preserve that selection only
-      // for a repeat touch on the same cell. A different target must release
-      // the old cell synchronously, otherwise it can flash in the new push's
-      // first frame.
-      if confirmedNavigationSelectionSession == nil || !previousTarget.matches(target) {
-        if !previousTarget.matches(target) {
-          _ = previousTarget.finishDeselectBackgroundAnimation()
-        }
+      // `prepareTouchIfNeeded` selects the cell before this callback, so a
+      // repeat touch on the same cell already owns the current visual state.
+      // Deselecting that target here would immediately erase the new press
+      // highlight. A different target must still release the old cell
+      // synchronously, otherwise it can flash in the new push's first frame.
+      if !previousTarget.matches(target) {
+        _ = previousTarget.finishDeselectBackgroundAnimation()
         previousTarget.deselect(animated: false)
         DispatchQueue.main.async { [weak self] in
           guard let self,

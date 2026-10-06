@@ -891,7 +891,15 @@ private final class ScrollInsetAdjustmentUIView: UIView, UIGestureRecognizerDele
     guard clearsNavigationSelectionOnViewWillAppear else { return }
     guard #available(iOS 16.0, tvOS 16.0, *) else { return }
     let session = navigationSelectionSession(for: coordinator)
-    guard shouldHandleNavigationSelectionSession?(session) == true else { return }
+    let handlesSession = shouldHandleNavigationSelectionSession?(session) == true
+    // iOS 18 can recreate the SwiftUI host before the returning screen's
+    // appearance callback. The UIKit cell is still selected, but the
+    // selection interaction has no session to identify it. Keep this escape
+    // hatch visual-only and only for a genuinely absent session; a stale,
+    // non-nil session must continue to be rejected so it cannot clear a newer
+    // press.
+    let usesIOS18VisualFallback = allowsIOS18NavigationSelectionFallback && session == nil
+    guard handlesSession || usesIOS18VisualFallback else { return }
     let transitionTarget = navigationSelectionTransitionTarget
     let navigationRows = selectedNavigationRows
     guard !navigationRows.isEmpty else { return }
@@ -906,7 +914,10 @@ private final class ScrollInsetAdjustmentUIView: UIView, UIGestureRecognizerDele
 
     let deselect = { [weak self] in
       guard let self else { return }
-      guard self.shouldHandleNavigationSelectionSession?(session) == true else { return }
+      let stillHandlesSession = self.shouldHandleNavigationSelectionSession?(session) == true
+      guard stillHandlesSession || (self.allowsIOS18NavigationSelectionFallback && session == nil) else {
+        return
+      }
       // React Native Screens may recreate the source List cell while it is
       // covered. Restore the saved cell immediately before UIKit starts its
       // coordinated deselection only when UIKit lost its native state. Calling
@@ -941,16 +952,31 @@ private final class ScrollInsetAdjustmentUIView: UIView, UIGestureRecognizerDele
       guard let self else { return }
       self.activeNavigationTransitionIdentifier = nil
       let isCurrentSession = self.shouldHandleNavigationSelectionSession?(session) == true
+      let isIOS18VisualFallback = self.allowsIOS18NavigationSelectionFallback && session == nil
       if context.isCancelled {
         // A newer press owns JS state, but this old transition can still leave
         // its source cell selected after UIKit restores its hierarchy. Release
         // only the target captured when this transition began; never inspect
         // live rows here because they may now belong to the newer press.
-        guard isCurrentSession else {
+        guard isCurrentSession || isIOS18VisualFallback else {
           self.deselectSupersededTransitionTarget(transitionTarget)
           return
         }
         self.skipsNextNavigationSelectionFinalization = true
+        if isIOS18VisualFallback {
+          // UIKit restores the selected cell when the pop is cancelled. Do
+          // not write JS selection state here because this fallback has no
+          // session owner; simply restore the captured cell and release the
+          // in-progress visual-deselect flag.
+          DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            guard let self else { return }
+            for navigationRow in navigationRows {
+              self.selectNavigationRow(navigationRow)
+            }
+            self.onNavigationSelectionRestored?()
+          }
+          return
+        }
         // The passive touch observer resolves whether SwiftUI's Button action
         // actually fired 30ms after touch-up. Wait for that result before
         // deciding whether a cancelled transition should restore this row.
@@ -987,8 +1013,15 @@ private final class ScrollInsetAdjustmentUIView: UIView, UIGestureRecognizerDele
         self.skipsNextNavigationSelectionFinalization = false
         // SwiftUI may reconcile the cell once more during the last transition
         // frame. Make the completed state authoritative before notifying React.
-        guard isCurrentSession else {
+        guard isCurrentSession || isIOS18VisualFallback else {
           self.deselectSupersededTransitionTarget(transitionTarget)
+          return
+        }
+        if isIOS18VisualFallback {
+          // There is no JS session to clear on this compatibility path. The
+          // coordinated UIKit deselection above is the complete operation.
+          self.deselectNavigationRowsAfterVisualFallback(navigationRows)
+          self.onNavigationSelectionRestored?()
           return
         }
         self.deselectNavigationRowsAfterSystemReconciliation(
@@ -1022,9 +1055,11 @@ private final class ScrollInsetAdjustmentUIView: UIView, UIGestureRecognizerDele
   /// recognizer delegate or touch-cancellation behavior.
   func refreshNavigationTransitionGestureObservation() {
 #if !os(tvOS)
-    guard clearsNavigationSelectionOnViewWillAppear,
-      selectedNavigationTarget?() != nil else {
+    guard clearsNavigationSelectionOnViewWillAppear else {
       return
+    }
+    if #available(iOS 19.0, *) {
+      guard selectedNavigationTarget?() != nil else { return }
     }
     guard let viewController = navigationSelectionViewController ?? findContentViewController(),
       let navigationController = viewController.navigationController else {
@@ -1037,6 +1072,21 @@ private final class ScrollInsetAdjustmentUIView: UIView, UIGestureRecognizerDele
       candidates.append(interactivePopGestureRecognizer)
     }
     candidates.append(contentsOf: navigationTransitionPanGestureRecognizers(in: navigationController.view))
+#if !os(tvOS)
+    if #unavailable(iOS 19.0) {
+      // react-native-screens installs the iOS 18 full-screen
+      // `RNSPanGestureRecognizer` on the RNSScreenStackView that contains the
+      // UINavigationController, not on the navigation controller's view tree.
+      // Walk upward as well so the full-screen pop is observed before its
+      // transition coordinator reaches the settling phase. Keep this
+      // compatibility observation out of iOS 26+ behavior.
+      var ancestor = navigationController.view.superview
+      while let view = ancestor {
+        candidates.append(contentsOf: navigationTransitionPanGestureRecognizers(attachedTo: view))
+        ancestor = view.superview
+      }
+    }
+#endif
 
     var existing = Set(navigationTransitionGestureRecognizers.map(ObjectIdentifier.init))
     for gestureRecognizer in candidates
@@ -1052,17 +1102,21 @@ private final class ScrollInsetAdjustmentUIView: UIView, UIGestureRecognizerDele
 
 #if !os(tvOS)
   private func navigationTransitionPanGestureRecognizers(in view: UIView) -> [UIGestureRecognizer] {
-    var result = (view.gestureRecognizers ?? []).filter { gestureRecognizer in
+    var result = navigationTransitionPanGestureRecognizers(attachedTo: view)
+    for subview in view.subviews {
+      result.append(contentsOf: navigationTransitionPanGestureRecognizers(in: subview))
+    }
+    return result
+  }
+
+  private func navigationTransitionPanGestureRecognizers(attachedTo view: UIView) -> [UIGestureRecognizer] {
+    (view.gestureRecognizers ?? []).filter { gestureRecognizer in
       guard gestureRecognizer is UIPanGestureRecognizer else { return false }
       if gestureRecognizer is UIScreenEdgePanGestureRecognizer { return true }
       let className = String(describing: type(of: gestureRecognizer))
       return className.contains("Transition") ||
         (className.contains("RNS") && className.contains("Pan"))
     }
-    for subview in view.subviews {
-      result.append(contentsOf: navigationTransitionPanGestureRecognizers(in: subview))
-    }
-    return result
   }
 
   @objc private func handleNavigationTransitionGesture(_ gestureRecognizer: UIGestureRecognizer) {
@@ -1079,13 +1133,86 @@ private final class ScrollInsetAdjustmentUIView: UIView, UIGestureRecognizerDele
 
   private func beginObservedInteractiveNavigationTransitionIfNeeded() {
     guard let viewController = navigationSelectionViewController,
-      let coordinator = viewController.navigationController?.transitionCoordinator,
+      let navigationController = viewController.navigationController,
+      let coordinator = navigationController.transitionCoordinator,
       coordinator.initiallyInteractive,
       let destinationViewController = coordinator.viewController(forKey: .to),
-      sharesViewControllerHierarchy(viewController, destinationViewController) else {
+      belongsToNavigationController(destinationViewController, navigationController) else {
+      return
+    }
+    guard isNavigationDestination(
+      viewController,
+      destinationViewController,
+      in: navigationController
+    ) else {
       return
     }
     deselectNavigationRowAlongsideTransition(coordinator, animated: true)
+  }
+
+  /// React Native Screens can expose a screen through an extra wrapper, so the
+  /// List controller and transition destination are not always in the same
+  /// parent chain. Prefer the hierarchy check, then fall back to the direct
+  /// UINavigationController stack index. The index fallback still excludes
+  /// every earlier page in a multi-level pop.
+  private func isNavigationDestination(
+    _ viewController: UIViewController,
+    _ destinationViewController: UIViewController,
+    in navigationController: UINavigationController
+  ) -> Bool {
+    let sharesHierarchy = sharesViewControllerHierarchy(
+      viewController,
+      destinationViewController
+    )
+    if #available(iOS 19.0, *) {
+      // Preserve the established iOS 26+ qualification exactly.
+      return sharesHierarchy
+    }
+    if sharesHierarchy {
+      return true
+    }
+    guard let viewControllerIndex = navigationStackIndex(
+      of: viewController,
+      in: navigationController
+    ),
+      let destinationIndex = navigationStackIndex(
+        of: destinationViewController,
+        in: navigationController
+      ) else {
+      return false
+    }
+    return viewControllerIndex == destinationIndex
+  }
+
+  private func navigationStackIndex(
+    of viewController: UIViewController,
+    in navigationController: UINavigationController
+  ) -> Int? {
+    var candidate: UIViewController? = viewController
+    while let current = candidate,
+      let parent = current.parent,
+      parent !== navigationController {
+      candidate = parent
+    }
+    guard let candidate, candidate.parent === navigationController else {
+      return nil
+    }
+    return navigationController.viewControllers.firstIndex { $0 === candidate }
+  }
+
+  private func belongsToNavigationController(
+    _ viewController: UIViewController,
+    _ navigationController: UINavigationController
+  ) -> Bool {
+    if viewController.navigationController === navigationController {
+      return true
+    }
+    var current: UIViewController? = viewController
+    while let candidate = current {
+      if candidate === navigationController { return true }
+      current = candidate.parent
+    }
+    return false
   }
 
   private func sharesViewControllerHierarchy(
@@ -1106,6 +1233,15 @@ private final class ScrollInsetAdjustmentUIView: UIView, UIGestureRecognizerDele
   }
 #endif
 
+  private var allowsIOS18NavigationSelectionFallback: Bool {
+#if os(tvOS)
+    return false
+#else
+    if #available(iOS 19.0, *) { return false }
+    return true
+#endif
+  }
+
   private func stopNavigationTransitionGestureObservation() {
 #if !os(tvOS)
     for gestureRecognizer in navigationTransitionGestureRecognizers {
@@ -1121,6 +1257,22 @@ private final class ScrollInsetAdjustmentUIView: UIView, UIGestureRecognizerDele
   func finalizeNavigationSelectionAfterAppearance() {
     guard clearsNavigationSelectionOnViewWillAppear else { return }
     guard #available(iOS 16.0, tvOS 16.0, *) else { return }
+#if !os(tvOS)
+    if #unavailable(iOS 19.0),
+      activeNavigationTransitionIdentifier != nil,
+      let viewController = navigationSelectionViewController,
+      let coordinator = viewController.navigationController?.transitionCoordinator,
+      coordinator.isAnimated {
+      // iOS 18 may report `viewDidAppear` while an interactive pop is still
+      // moving. Waiting for that coordinator prevents the selected row from
+      // being cleared at progress zero instead of fading with the gesture.
+      coordinator.animate(alongsideTransition: nil) { [weak self] context in
+        guard !context.isCancelled else { return }
+        self?.finalizeNavigationSelectionAfterAppearance()
+      }
+      return
+    }
+#endif
     if skipsNextNavigationSelectionFinalization {
       skipsNextNavigationSelectionFinalization = false
       // A cancelled interactive pop retains its captured session until the
@@ -1135,7 +1287,9 @@ private final class ScrollInsetAdjustmentUIView: UIView, UIGestureRecognizerDele
     }
     let session = navigationSelectionTransitionSession
     let transitionTarget = navigationSelectionTransitionTarget
-    guard shouldHandleNavigationSelectionSession?(session) == true else {
+    let handlesSession = shouldHandleNavigationSelectionSession?(session) == true
+    let usesIOS18VisualFallback = allowsIOS18NavigationSelectionFallback && session == nil
+    guard handlesSession || usesIOS18VisualFallback else {
       navigationSelectionTransitionIdentifier = nil
       navigationSelectionTransitionSession = nil
       navigationSelectionTransitionTarget = nil
@@ -1143,6 +1297,14 @@ private final class ScrollInsetAdjustmentUIView: UIView, UIGestureRecognizerDele
       return
     }
     clearNavigationSelectionImmediately(session: session)
+#if !os(tvOS)
+    if #unavailable(iOS 19.0) {
+      scheduleIOS18FinalNavigationSelectionCleanup(
+        session: session,
+        attemptsRemaining: 8
+      )
+    }
+#endif
     // iOS can perform one final SwiftUI cell reconciliation after the child
     // controller's appearance callback. Inspect the live cells again after
     // that pass so a completed pop following a cancelled pop cannot reselect it.
@@ -1217,14 +1379,70 @@ private final class ScrollInsetAdjustmentUIView: UIView, UIGestureRecognizerDele
   }
 
   private func clearNavigationSelectionImmediately(session: Int?) {
-    guard shouldHandleNavigationSelectionSession?(session) == true else { return }
+    let handlesSession = shouldHandleNavigationSelectionSession?(session) == true
+    let usesIOS18VisualFallback = allowsIOS18NavigationSelectionFallback && session == nil
+    guard handlesSession || usesIOS18VisualFallback else { return }
     let navigationRows = selectedNavigationRows
     for navigationRow in navigationRows {
       deselectNavigationRow(navigationRow, animated: false)
     }
-    guard !navigationRows.isEmpty else { return }
-    onNavigationSelectionCleared?(session)
+    guard !navigationRows.isEmpty else {
+      // On iOS 18 the returning List cell can be recreated after the
+      // appearance callback, so there is no live row to report. Release the
+      // navigation session through the compatibility path only; iOS 26+
+      // keeps the established empty-row behavior unchanged.
+      if #unavailable(iOS 19.0) {
+        selectedNavigationTarget?()?.deselect(animated: false)
+        onNavigationSelectionCleared?(session)
+      }
+      return
+    }
+    if handlesSession {
+      onNavigationSelectionCleared?(session)
+    }
   }
+
+  private func deselectNavigationRowsAfterVisualFallback(
+    _ transitionRows: [NavigationRowSelection]
+  ) {
+    for navigationRow in transitionRows + visibleNavigationRows {
+      deselectNavigationRow(navigationRow, animated: false)
+    }
+    DispatchQueue.main.async { [weak self] in
+      guard let self else { return }
+      for navigationRow in self.visibleNavigationRows {
+        self.deselectNavigationRow(navigationRow, animated: false)
+      }
+    }
+  }
+
+#if !os(tvOS)
+  /// iOS 18 may install the destination List cell one or two frames after the
+  /// navigation session is cleared. Retry only on that OS family; newer iOS
+  /// versions use the normal transition-coordinator reconciliation and must
+  /// not run this broad visual cleanup.
+  private func scheduleIOS18FinalNavigationSelectionCleanup(
+    session: Int?,
+    attemptsRemaining: Int
+  ) {
+    guard attemptsRemaining > 0 else { return }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+      guard let self else { return }
+      let currentSession = self.navigationSelectionSessionForTransition?()
+      guard currentSession == nil || currentSession == session else { return }
+      let navigationRows = self.selectedNavigationRows
+      for navigationRow in navigationRows {
+        self.deselectNavigationRow(navigationRow, animated: false)
+      }
+      if navigationRows.isEmpty {
+        self.scheduleIOS18FinalNavigationSelectionCleanup(
+          session: session,
+          attemptsRemaining: attemptsRemaining - 1
+        )
+      }
+    }
+  }
+#endif
 
   private enum NavigationRowSelection {
     case table(UITableView, IndexPath)

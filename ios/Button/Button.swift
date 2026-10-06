@@ -189,6 +189,7 @@ private final class ListSelectionTouchTrackingUIView: UIView {
   private var isTouchPrepared = false
   private var competingPanGestureRecognized = false
   private var registeredTransitionCleanupSequence: Int?
+  private var stalledTouchCleanupSequence: Int?
 
   override init(frame: CGRect) {
     super.init(frame: frame)
@@ -340,10 +341,52 @@ private final class ListSelectionTouchTrackingUIView: UIView {
     touchSequence = touchState?.beginTouch() ?? touchSequence &+ 1
     competingPanGestureRecognized = false
     registeredTransitionCleanupSequence = nil
+    stalledTouchCleanupSequence = nil
     let target = selectContainingListCell()
     activeSelectionTarget = target
     let session = onTouchDown?(target)
     touchState?.setSession(session, for: touchSequence)
+    scheduleStalledTouchCleanup(sequence: touchSequence)
+  }
+
+  /// A system navigation-history popover can take ownership of a row touch
+  /// after UIKit has delivered `.began`, without delivering the matching
+  /// `.ended` or `.cancelled` callback to this passive recognizer. In that
+  /// case the normal button-action wait loop never runs and the cell would
+  /// remain selected forever. Keep the normal one-second action grace period,
+  /// then clear only an unconfirmed touch which is still in progress.
+  private func scheduleStalledTouchCleanup(sequence: Int) {
+    guard stalledTouchCleanupSequence != sequence else { return }
+    stalledTouchCleanupSequence = sequence
+    let observer = touchObserver
+    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self, weak observer] in
+      guard let self,
+        self.touchSequence == sequence,
+        self.isTouchPrepared,
+        self.touchState?.isConfirmed(sequence) != true else {
+        return
+      }
+      // A system navigation-history popover can detach the SwiftUI backing
+      // view before UIKit sends the observer its terminal state. In that case
+      // `detachFromObservedCell()` has already removed the observer, so there
+      // is no recognizer state left to inspect. A newly attached observer is
+      // still safe: a new physical touch increments `touchSequence` first.
+      if let currentObserver = self.touchObserver {
+        guard currentObserver === observer else { return }
+        guard currentObserver.state == .possible || currentObserver.state == .began || currentObserver.state == .changed else {
+          return
+        }
+      }
+      self.touchState?.cancelTouch(sequence)
+      let shouldClear = self.onTouchFinishedWithoutConfirmedPress?(
+        self.touchState?.session(for: sequence)
+      ) ?? true
+      if shouldClear {
+        self.deselectContainingListCell()
+      }
+      self.isTouchPrepared = false
+      self.stalledTouchCleanupSequence = nil
+    }
   }
 
   /// Keep UIKit's row state authoritative until SwiftUI actually invokes the

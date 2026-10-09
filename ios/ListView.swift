@@ -526,27 +526,17 @@ struct ListView: ExpoSwiftUI.View {
     }
   }
 
-  /// Navigation rows use their real UIKit cell for immediate press feedback.
-  /// Their SwiftUI selection binding is updated only after the source screen
-  /// has disappeared, never in the push transaction where it could expose a
-  /// full-screen destination frame before UIKit starts the transition.
+  /// 普通导航行由 UIKit 管理点击反馈；编辑多选才启用 SwiftUI selection binding。
   private var usesUIKitNavigationSelection: Bool {
     props.clearsNavigationSelectionOnViewWillAppear
   }
 
-  @ViewBuilder
   private var selectionList: some View {
-    if usesUIKitNavigationSelection {
-      // Navigation rows set the concrete UIKit cell state themselves. Do not
-      // install SwiftUI's List selection coordinator: it observes that same
-      // cell and can commit a source-List update in the push transaction.
-      List {
-        navigationSelectionChildren
-      }
-    } else {
-      List(selection: $selection) {
-        navigationSelectionChildren
-      }
+    // 保持同一个 List 的结构身份，切换编辑模式只切换可选 binding。
+    // 导航模式传 nil，继续禁止 SwiftUI selection 协调器介入 UIKit 的点击反馈；
+    // 不使用两个 List 分支，避免重建滚动视图并丢失大标题的滚动关联。
+    List(selection: usesUIKitNavigationSelection ? nil : $selection) {
+      navigationSelectionChildren
     }
   }
 

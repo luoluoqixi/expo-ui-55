@@ -375,11 +375,6 @@ private final class ListSelectionInteractionState {
     !isNavigationDeselectInProgress
   }
 
-  func removingCancelledSelection(from selection: Set<AnyHashable>) -> Set<AnyHashable> {
-    guard let cancelledSelectionID else { return selection }
-    return selection.subtracting([cancelledSelectionID])
-  }
-
   func clearNavigationTarget(session: Int? = nil) {
     if let session, !isNavigationSelectionSessionCurrent(session) { return }
     pendingSelectionID = nil
@@ -494,7 +489,12 @@ struct ListView: ExpoSwiftUI.View {
         scrollToInitialTarget(proxy)
       }
       .onChange(of: props.selection) { newValue in
-        guard !usesUIKitNavigationSelection else { return }
+        // 导航模式的 binding 为 nil，只清空编辑态缓存，不操作导航 cell。
+        // 不能忽略退出编辑时传入的空值，否则再次进入时会显示上次的勾选。
+        guard !usesUIKitNavigationSelection else {
+          selection = []
+          return
+        }
         let newSelection = Self.getHashableSetFromEither(newValue)
         if newSelection.isEmpty {
           selection = newSelection
@@ -503,6 +503,11 @@ struct ListView: ExpoSwiftUI.View {
           return
         }
         selection = newSelection
+      }
+      .onChange(of: usesUIKitNavigationSelection) { usesUIKitSelection in
+        // 切换模式时受控值可能仍是同一个空集合，props.selection 的 onChange 不会触发。
+        // 重新接入 binding 前按当前 props 同步；是否保留选择由调用方决定。
+        selection = usesUIKitSelection ? [] : Self.getHashableSetFromEither(props.selection)
       }
       .onChange(of: props.navigationSelectionClearToken) { _ in
         selectionInteraction.selectedNavigationTarget()?.deselect(animated: false)
@@ -514,14 +519,8 @@ struct ListView: ExpoSwiftUI.View {
       }
       .onChange(of: selection) { newSelection in
         guard !usesUIKitNavigationSelection else { return }
-        let filteredSelection = selectionInteraction.removingCancelledSelection(
-          from: newSelection
-        )
-        if filteredSelection != newSelection {
-          selection = filteredSelection
-          return
-        }
-        handleSelectionChange(selection: filteredSelection)
+        // 导航取消只属于 UIKit 触摸 session，不得过滤 SwiftUI 的编辑多选集合。
+        handleSelectionChange(selection: newSelection)
       }
     }
   }

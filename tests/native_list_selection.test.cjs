@@ -148,10 +148,20 @@ print("selection regression passed")
   }
 });
 
-test('保留单一 List 和 nil 导航 binding，不恢复结构性重建', () => {
+test('保留单一 List，版本分流不恢复结构性重建', () => {
   const block = extractBlock('private var selectionList: some View').declaration;
   assert.equal((block.match(/\bList\s*\(/g) ?? []).length, 1);
   assert.doesNotMatch(block, /\bif\b|\belse\b/);
-  assert.match(block, /List\(selection: usesUIKitNavigationSelection \? nil : \$selection\)/);
+  assert.match(block, /List\(selection: listSelectionBinding\)/);
   assert.doesNotMatch(source, /removingCancelledSelection/);
+});
+
+test('iOS 26 以下常驻 binding，26+ 与非 iOS 保留导航隔离', () => {
+  const block = extractBlock('private var listSelectionBinding: Binding<Set<AnyHashable>>?').declaration;
+  assert.match(
+    block,
+    /#if os\(iOS\)\s*\/\/[^\n]*\n\s*if #unavailable\(iOS 26\.0\) \{\s*return \$selection\s*\}\s*#endif/,
+  );
+  assert.match(block, /return usesUIKitNavigationSelection \? nil : \$selection\s*\}$/);
+  assert.doesNotMatch(block, /\bList\s*\(/);
 });

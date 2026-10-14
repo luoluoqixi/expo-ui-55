@@ -489,7 +489,7 @@ struct ListView: ExpoSwiftUI.View {
         scrollToInitialTarget(proxy)
       }
       .onChange(of: props.selection) { newValue in
-        // 导航模式的 binding 为 nil，只清空编辑态缓存，不操作导航 cell。
+        // 导航模式只清空编辑态缓存，不主动操作导航 cell。
         // 不能忽略退出编辑时传入的空值，否则再次进入时会显示上次的勾选。
         guard !usesUIKitNavigationSelection else {
           selection = []
@@ -506,7 +506,7 @@ struct ListView: ExpoSwiftUI.View {
       }
       .onChange(of: usesUIKitNavigationSelection) { usesUIKitSelection in
         // 切换模式时受控值可能仍是同一个空集合，props.selection 的 onChange 不会触发。
-        // 重新接入 binding 前按当前 props 同步；是否保留选择由调用方决定。
+        // 进入编辑时按当前 props 同步；是否保留选择由调用方决定。
         selection = usesUIKitSelection ? [] : Self.getHashableSetFromEither(props.selection)
       }
       .onChange(of: props.navigationSelectionClearToken) { _ in
@@ -525,16 +525,25 @@ struct ListView: ExpoSwiftUI.View {
     }
   }
 
-  /// 普通导航行由 UIKit 管理点击反馈；编辑多选才启用 SwiftUI selection binding。
+  /// 普通导航行由 UIKit 管理点击反馈；编辑模式才回传 SwiftUI 多选变化。
   private var usesUIKitNavigationSelection: Bool {
     props.clearsNavigationSelectionOnViewWillAppear
   }
 
+  private var listSelectionBinding: Binding<Set<AnyHashable>>? {
+#if os(iOS)
+    // iOS 26 以下常驻 binding，避免 nil 切换导致列表位置、标题联动和刷新失效。
+    if #unavailable(iOS 26.0) {
+      return $selection
+    }
+#endif
+    // iOS 26+ 保留导航选中隔离；非 iOS 平台也维持原有策略。
+    return usesUIKitNavigationSelection ? nil : $selection
+  }
+
   private var selectionList: some View {
-    // 保持同一个 List 的结构身份，切换编辑模式只切换可选 binding。
-    // 导航模式传 nil，继续禁止 SwiftUI selection 协调器介入 UIKit 的点击反馈；
-    // 不使用两个 List 分支，避免重建滚动视图并丢失大标题的滚动关联。
-    List(selection: usesUIKitNavigationSelection ? nil : $selection) {
+    // 版本分流只改变 binding 参数，不切换 List 分支，保持 SwiftUI 结构身份。
+    List(selection: listSelectionBinding) {
       navigationSelectionChildren
     }
   }

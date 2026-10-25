@@ -37,6 +37,7 @@ final class ListProps: UIBaseViewProps {
   @Field var nativeEditTint: Color?
   @Field var navigationSelectionClearToken = 0
   @Field var refreshEnabled = true
+  @Field var refreshTint: Color?
   @Field var refreshable = false
   @Field var refreshing = false
   @Field var scrollPositionRestoreToken = 0
@@ -472,6 +473,7 @@ struct ListView: ExpoSwiftUI.View {
             selectionInteraction.setNavigationSelectionBeganHandler(handler)
           },
           refreshEnabled: props.refreshEnabled,
+          refreshTint: props.refreshTint,
           refreshable: props.refreshable,
           refreshing: props.refreshing,
           scrollPositionRestoreToken: props.scrollPositionRestoreToken,
@@ -608,6 +610,8 @@ struct ListView: ExpoSwiftUI.View {
 }
 
 private struct ScrollInsetAdjustmentView: UIViewControllerRepresentable {
+  @Environment(\.colorScheme) private var colorScheme
+
   let automaticallyAdjustsScrollIndicatorInsets: Bool
   let clearsNavigationSelectionOnViewWillAppear: Bool
   let contentInsetAdjustmentBehavior: ListContentInsetAdjustmentBehavior?
@@ -625,6 +629,7 @@ private struct ScrollInsetAdjustmentView: UIViewControllerRepresentable {
   let shouldRestoreNavigationSelection: (Int?) -> Bool
   let registerNavigationSelectionObserver: (@escaping () -> Void) -> Void
   let refreshEnabled: Bool
+  let refreshTint: Color?
   let refreshable: Bool
   let refreshing: Bool
   let scrollPositionRestoreToken: Int
@@ -653,6 +658,8 @@ private struct ScrollInsetAdjustmentView: UIViewControllerRepresentable {
       view?.refreshNavigationTransitionGestureObservation()
     }
     view.refreshEnabled = refreshEnabled
+    view.refreshColorScheme = colorScheme
+    view.refreshTint = refreshTint.map { UIColor($0) }
     view.refreshable = refreshable
     view.refreshing = refreshing
     view.scrollPositionRestoreToken = scrollPositionRestoreToken
@@ -683,6 +690,8 @@ private struct ScrollInsetAdjustmentView: UIViewControllerRepresentable {
       view?.refreshNavigationTransitionGestureObservation()
     }
     view.refreshEnabled = refreshEnabled
+    view.refreshColorScheme = colorScheme
+    view.refreshTint = refreshTint.map { UIColor($0) }
     view.refreshable = refreshable
     view.refreshing = refreshing
     view.scrollPositionRestoreToken = scrollPositionRestoreToken
@@ -799,6 +808,20 @@ private final class ScrollInsetAdjustmentUIView: UIView, UIGestureRecognizerDele
   var refreshEnabled = true {
     didSet {
       guard oldValue != refreshEnabled else { return }
+      scheduleUpdate()
+    }
+  }
+
+  var refreshColorScheme: ColorScheme = .light {
+    didSet {
+      guard oldValue != refreshColorScheme else { return }
+      scheduleUpdate()
+    }
+  }
+
+  var refreshTint: UIColor? {
+    didSet {
+      guard oldValue != refreshTint else { return }
       scheduleUpdate()
     }
   }
@@ -1747,6 +1770,11 @@ private final class ScrollInsetAdjustmentUIView: UIView, UIGestureRecognizerDele
       scrollView.refreshControl = nativeRefreshControl
     }
 
+    // The manually attached UIKit control does not inherit SwiftUI's
+    // colorScheme environment. Bridge it explicitly, including theme changes,
+    // so the default indicator remains visible on a dark List.
+    nativeRefreshControl.overrideUserInterfaceStyle = refreshColorScheme == .dark ? .dark : .light
+    nativeRefreshControl.tintColor = refreshTint ?? .secondaryLabel
     nativeRefreshControl.isEnabled = refreshEnabled
     nativeRefreshControl.isHidden = !refreshEnabled
 

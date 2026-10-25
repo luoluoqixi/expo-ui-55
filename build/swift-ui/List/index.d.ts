@@ -66,6 +66,11 @@ export interface ListProps extends CommonViewModifierProps {
      * @default true
      */
     refreshEnabled?: boolean;
+    /**
+     * Color of the native refresh indicator. Defaults to the system secondary label color,
+     * following the List's SwiftUI color scheme.
+     */
+    refreshTint?: string;
     /** Whether the List installs its stable native refresh control. */
     refreshable?: boolean;
     /** Whether the native refresh indicator is active. */

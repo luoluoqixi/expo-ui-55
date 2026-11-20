@@ -535,22 +535,24 @@ private final class ListSelectionTouchTrackingUIView: UIView {
     }
 
     if let tableView, let tableCell, let indexPath = tableView.indexPath(for: tableCell) {
-      tableView.selectRow(at: indexPath, animated: false, scrollPosition: .none)
       selectedTableView = tableView
       selectedTableCell = tableCell
       let target = ListNavigationSelectionTarget(tableView: tableView, indexPath: indexPath)
-      target.select()
+      if !tableView.delaysContentTouches {
+        target.select()
+      }
       return target
     } else if let collectionView, let collectionCell,
       let indexPath = collectionView.indexPath(for: collectionCell) {
-      collectionView.selectItem(at: indexPath, animated: false, scrollPosition: [])
       selectedCollectionView = collectionView
       selectedCollectionCell = collectionCell
       let target = ListNavigationSelectionTarget(
         collectionView: collectionView,
         indexPath: indexPath
       )
-      target.select()
+      if !collectionView.delaysContentTouches {
+        target.select()
+      }
       return target
     }
     return nil

@@ -9,6 +9,7 @@ public struct Button: ExpoSwiftUI.View {
   @Environment(\.expoListSelectionAction) private var selectListItem
   @Environment(\.expoListSelectionClearAction) private var clearListItem
   @Environment(\.expoListSelectionConfirmAction) private var confirmListItem
+  @Environment(\.expoListSelectionTarget) private var listSelectionTarget
   @State private var selectionTouchState = ListSelectionTouchState()
 
   public init(props: ButtonProps) {
@@ -55,6 +56,7 @@ public struct Button: ExpoSwiftUI.View {
       content.background(
         ListSelectionTouchTrackingView(
           selectionID: selectionID,
+          selectionTarget: listSelectionTarget,
           touchState: selectionTouchState,
           onTouchDown: { target in
             // Select the SwiftUI model during the cell recognizer's `.began`,
@@ -90,6 +92,7 @@ public struct Button: ExpoSwiftUI.View {
 /// with a passive UIKit recognizer and select the real collection/table cell.
 private struct ListSelectionTouchTrackingView: UIViewRepresentable {
   let selectionID: AnyHashable
+  let selectionTarget: (AnyHashable) -> ListNavigationSelectionTarget?
   let touchState: ListSelectionTouchState
   let onTouchDown: (ListNavigationSelectionTarget?) -> Int?
   let onTouchFinishedWithoutConfirmedPress: (Int?) -> Bool
@@ -97,6 +100,7 @@ private struct ListSelectionTouchTrackingView: UIViewRepresentable {
   func makeUIView(context: Context) -> ListSelectionTouchTrackingUIView {
     let view = ListSelectionTouchTrackingUIView()
     view.selectionID = selectionID
+    view.selectionTarget = selectionTarget
     view.touchState = touchState
     view.onTouchDown = onTouchDown
     view.onTouchFinishedWithoutConfirmedPress = onTouchFinishedWithoutConfirmedPress
@@ -105,6 +109,7 @@ private struct ListSelectionTouchTrackingView: UIViewRepresentable {
 
   func updateUIView(_ uiView: ListSelectionTouchTrackingUIView, context: Context) {
     uiView.selectionID = selectionID
+    uiView.selectionTarget = selectionTarget
     uiView.touchState = touchState
     uiView.onTouchDown = onTouchDown
     uiView.onTouchFinishedWithoutConfirmedPress = onTouchFinishedWithoutConfirmedPress
@@ -173,7 +178,12 @@ private final class ListSelectionTouchState {
 }
 
 private final class ListSelectionTouchTrackingUIView: UIView {
-  var selectionID: AnyHashable?
+  var selectionID: AnyHashable? {
+    willSet {
+      if selectionID != newValue { detachSelectionSource() }
+    }
+  }
+  var selectionTarget: ((AnyHashable) -> ListNavigationSelectionTarget?)?
   var touchState: ListSelectionTouchState?
   var onTouchDown: ((ListNavigationSelectionTarget?) -> Int?)?
   var onTouchFinishedWithoutConfirmedPress: ((Int?) -> Bool)?
@@ -204,8 +214,10 @@ private final class ListSelectionTouchTrackingUIView: UIView {
   override func didMoveToWindow() {
     super.didMoveToWindow()
     if window == nil {
+      detachSelectionSource()
       detachFromObservedCell()
     } else {
+      attachSelectionSource()
       attachToNearestCellIfNeeded()
     }
   }
@@ -213,19 +225,34 @@ private final class ListSelectionTouchTrackingUIView: UIView {
   override func didMoveToSuperview() {
     super.didMoveToSuperview()
     if superview == nil {
+      detachSelectionSource()
       detachFromObservedCell()
     } else {
+      attachSelectionSource()
       attachToNearestCellIfNeeded()
     }
   }
 
   deinit {
+    detachSelectionSource()
     detachFromObservedCell()
+  }
+
+  private func attachSelectionSource() {
+    guard let selectionID else { return }
+    selectionTarget?(selectionID)?.attachSource(self)
+  }
+
+  private func detachSelectionSource() {
+    activeSelectionTarget?.detachSource(self)
+    guard let selectionID else { return }
+    selectionTarget?(selectionID)?.detachSource(self)
   }
 
   func attachToNearestCellIfNeeded() {
     DispatchQueue.main.async { [weak self] in
       guard let self else { return }
+      self.attachSelectionSource()
       var candidate = self.superview
       var nearestCell: UIView?
       while let current = candidate {
@@ -537,9 +564,9 @@ private final class ListSelectionTouchTrackingUIView: UIView {
     if let tableView, let tableCell, let indexPath = tableView.indexPath(for: tableCell) {
       selectedTableView = tableView
       selectedTableCell = tableCell
-      let target = ListNavigationSelectionTarget(tableView: tableView, indexPath: indexPath)
+      let target = ListNavigationSelectionTarget(tableView: tableView, indexPath: indexPath, sourceView: self)
       if !tableView.delaysContentTouches {
-        target.select()
+        target.select(highlighted: true)
       }
       return target
     } else if let collectionView, let collectionCell,
@@ -548,10 +575,11 @@ private final class ListSelectionTouchTrackingUIView: UIView {
       selectedCollectionCell = collectionCell
       let target = ListNavigationSelectionTarget(
         collectionView: collectionView,
-        indexPath: indexPath
+        indexPath: indexPath,
+        sourceView: self
       )
       if !collectionView.delaysContentTouches {
-        target.select()
+        target.select(highlighted: true)
       }
       return target
     }

@@ -71,6 +71,10 @@ struct ListSelectionConfirmActionEnvironmentKey: EnvironmentKey {
   static let defaultValue: (AnyHashable, Int?) -> Bool = { _, _ in true }
 }
 
+struct ListSelectionTargetEnvironmentKey: EnvironmentKey {
+  static let defaultValue: (AnyHashable) -> ListNavigationSelectionTarget? = { _ in nil }
+}
+
 extension EnvironmentValues {
   var expoListSelectionAction: (AnyHashable, ListNavigationSelectionTarget?) -> Int? {
     get { self[ListSelectionActionEnvironmentKey.self] }
@@ -87,25 +91,108 @@ extension EnvironmentValues {
     set { self[ListSelectionConfirmActionEnvironmentKey.self] = newValue }
   }
 
+  var expoListSelectionTarget: (AnyHashable) -> ListNavigationSelectionTarget? {
+    get { self[ListSelectionTargetEnvironmentKey.self] }
+    set { self[ListSelectionTargetEnvironmentKey.self] = newValue }
+  }
+
 }
 
-/// Keeps the UIKit cell even if SwiftUI later loses its selected index path.
+/// Owns a navigation row's persistent selection independently of SwiftUI's
+/// automatic Button highlight, which SwiftUI clears after its primary action.
 final class ListNavigationSelectionTarget {
   private weak var tableView: UITableView?
   private weak var collectionView: UICollectionView?
-  private let indexPath: IndexPath
+  private var indexPath: IndexPath
+  private var selectionBackground: UIView?
+  private weak var sourceView: UIView?
+  private var isSelectionVisible = false
 
-  init(tableView: UITableView, indexPath: IndexPath) {
-    self.tableView = tableView
-    self.indexPath = indexPath
+  /// SwiftUI can replace a row's cell during a push and reuse its old cell for
+  /// another row. The logical Button source must own the fill's attachment,
+  /// rather than the lifetime of that reusable cell.
+  func attachSource(_ source: UIView) {
+    guard source.window != nil else { return }
+    var ancestor = source.superview
+    var tableCell: UITableViewCell?
+    var collectionCell: UICollectionViewCell?
+    while let view = ancestor {
+      if let cell = view as? UITableViewCell { tableCell = cell }
+      if let cell = view as? UICollectionViewCell { collectionCell = cell }
+      if let table = view as? UITableView, let cell = tableCell,
+        let path = table.indexPath(for: cell) {
+        sourceView = source
+        tableView = table
+        indexPath = path
+        return
+      }
+      if let collection = view as? UICollectionView, let cell = collectionCell,
+        let path = collection.indexPath(for: cell) {
+        sourceView = source
+        collectionView = collection
+        indexPath = path
+        if isSelectionVisible { showSelectionBackground(in: cell) }
+        return
+      }
+      ancestor = view.superview
+    }
   }
 
-  init(collectionView: UICollectionView, indexPath: IndexPath) {
+  func detachSource(_ source: UIView) {
+    guard sourceView === source else { return }
+    selectionBackground?.removeFromSuperview()
+    selectionBackground = nil
+    sourceView = nil
+  }
+
+  private func showSelectionBackground(in cell: UICollectionViewCell) {
+    guard #available(iOS 16.0, tvOS 16.0, *) else { return }
+    if selectionBackground?.superview !== cell.contentView {
+      selectionBackground?.removeFromSuperview()
+      let background = UIView(frame: cell.contentView.bounds)
+      background.isUserInteractionEnabled = false
+      background.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+      // Keep the cell's own background configuration and grouped appearance.
+      // Only the navigation-selection fill lives beneath its content.
+      cell.contentView.insertSubview(background, at: 0)
+      selectionBackground = background
+    }
+    var state = cell.configurationState
+    state.isSelected = true
+    state.isHighlighted = false
+    let configuration = cell.defaultBackgroundConfiguration().updated(for: state)
+    UIView.performWithoutAnimation {
+      selectionBackground?.backgroundColor = configuration
+        .resolvedBackgroundColor(for: cell.tintColor)
+        .resolvedColor(with: cell.traitCollection)
+      selectionBackground?.alpha = 1
+    }
+  }
+
+  init(tableView: UITableView, indexPath: IndexPath, sourceView: UIView) {
+    self.tableView = tableView
+    self.indexPath = indexPath
+    self.sourceView = sourceView
+  }
+
+  init(collectionView: UICollectionView, indexPath: IndexPath, sourceView: UIView) {
     self.collectionView = collectionView
     self.indexPath = indexPath
+    self.sourceView = sourceView
+  }
+
+  deinit {
+    selectionBackground?.removeFromSuperview()
   }
 
   func deselect(animated: Bool) {
+    isSelectionVisible = false
+    if animated {
+      selectionBackground?.alpha = 0
+    } else {
+      selectionBackground?.removeFromSuperview()
+      selectionBackground = nil
+    }
     if let tableView {
       tableView.cellForRow(at: indexPath)?.isHighlighted = false
       tableView.deselectRow(at: indexPath, animated: animated)
@@ -114,9 +201,12 @@ final class ListNavigationSelectionTarget {
       }
     }
     if let collectionView {
-      collectionView.cellForItem(at: indexPath)?.isHighlighted = false
-      collectionView.deselectItem(at: indexPath, animated: animated)
-      if !animated {
+      // The fill's alpha is animated by the navigation coordinator. Avoid a
+      // second SwiftUI-owned selection animation underneath it, which can
+      // outlive an interactive cancellation or follow a reused cell.
+      UIView.performWithoutAnimation {
+        collectionView.cellForItem(at: indexPath)?.isHighlighted = false
+        collectionView.deselectItem(at: indexPath, animated: false)
         collectionView.cellForItem(at: indexPath)?.isSelected = false
       }
     }
@@ -155,16 +245,20 @@ final class ListNavigationSelectionTarget {
     return 0
   }
 
-  func select() {
+  func select(highlighted: Bool = false) {
+    isSelectionVisible = true
     if let tableView {
       tableView.selectRow(at: indexPath, animated: false, scrollPosition: .none)
       tableView.cellForRow(at: indexPath)?.isSelected = true
-      tableView.cellForRow(at: indexPath)?.isHighlighted = true
+      tableView.cellForRow(at: indexPath)?.isHighlighted = highlighted
     }
     if let collectionView {
       collectionView.selectItem(at: indexPath, animated: false, scrollPosition: [])
       collectionView.cellForItem(at: indexPath)?.isSelected = true
-      collectionView.cellForItem(at: indexPath)?.isHighlighted = true
+      if let cell = collectionView.cellForItem(at: indexPath) {
+        cell.isHighlighted = highlighted
+        showSelectionBackground(in: cell)
+      }
     }
   }
 
@@ -192,16 +286,7 @@ final class ListNavigationSelectionTarget {
   /// Keeping `isHighlighted` set here leaves a non-interactive highlight above
   /// the selection background, which masks the next transition's deselection.
   func restoreSelection() {
-    if let tableView {
-      tableView.selectRow(at: indexPath, animated: false, scrollPosition: .none)
-      tableView.cellForRow(at: indexPath)?.isSelected = true
-      tableView.cellForRow(at: indexPath)?.isHighlighted = false
-    }
-    if let collectionView {
-      collectionView.selectItem(at: indexPath, animated: false, scrollPosition: [])
-      collectionView.cellForItem(at: indexPath)?.isSelected = true
-      collectionView.cellForItem(at: indexPath)?.isHighlighted = false
-    }
+    select()
   }
 
   /// A saved target can outlive a SwiftUI cell recreation. Only restore it
@@ -362,6 +447,11 @@ private final class ListSelectionInteractionState {
       return navigationSelectionTarget
     }
     return navigationSelectionTargets[session] ?? navigationSelectionTarget
+  }
+
+  func navigationTarget(for selectionID: AnyHashable) -> ListNavigationSelectionTarget? {
+    guard (pendingSelectionID ?? confirmedSelectionID) == selectionID else { return nil }
+    return selectedNavigationTarget()
   }
 
   func beginNavigationDeselect() {
@@ -561,6 +651,9 @@ struct ListView: ExpoSwiftUI.View {
       }
       .environment(\.expoListSelectionConfirmAction) { itemID, session in
         selectionInteraction.confirm(itemID, session: session)
+      }
+      .environment(\.expoListSelectionTarget) { itemID in
+        selectionInteraction.navigationTarget(for: itemID)
       }
   }
 
@@ -902,9 +995,9 @@ private final class ScrollInsetAdjustmentUIView: UIView, UIGestureRecognizerDele
   private var navigationSelectionTransitionTarget: ListNavigationSelectionTarget?
   private var skipsNextNavigationSelectionFinalization = false
 
-  /// UIKit owns the cell-selection visual state. Deselecting its actual table or
-  /// collection cell inside the screen transition coordinator makes the highlight
-  /// scrub with an interactive back gesture instead of jumping at its completion.
+  /// Drive the navigation-selection appearance with the screen transition
+  /// coordinator so it scrubs with an interactive back gesture. Collection
+  /// cells fade their persistent fill; table cells use native deselection.
   func deselectNavigationRowAlongsideTransition(
     _ coordinator: UIViewControllerTransitionCoordinator?,
     animated: Bool
@@ -932,6 +1025,9 @@ private final class ScrollInsetAdjustmentUIView: UIView, UIGestureRecognizerDele
     }
     activeNavigationTransitionIdentifier = transitionIdentifier
     let shouldAnimate = animated || coordinator?.isAnimated == true
+    UIView.performWithoutAnimation {
+      transitionTarget?.restoreSelection()
+    }
 
     let deselect = { [weak self] in
       guard let self else { return }
@@ -939,25 +1035,11 @@ private final class ScrollInsetAdjustmentUIView: UIView, UIGestureRecognizerDele
       guard stillHandlesSession || (self.allowsIOS18NavigationSelectionFallback && session == nil) else {
         return
       }
-      // React Native Screens may recreate the source List cell while it is
-      // covered. Restore the saved cell immediately before UIKit starts its
-      // coordinated deselection only when UIKit lost its native state. Calling
-      // `select` on an already-selected source starts another collection-view
-      // selection transaction; that transaction can remain visible when a new
-      // item is pressed before this pop completes.
-      for navigationRow in navigationRows {
-        if !self.hasActiveVisualSelection(navigationRow) {
-          self.selectNavigationRow(navigationRow)
-        } else {
-        }
-      }
       for navigationRow in navigationRows {
         self.deselectNavigationRow(navigationRow, animated: shouldAnimate)
       }
-      // Let UIKit begin the native cell deselection while the row is still
-      // selected. Clearing SwiftUI's binding first removes the only animatable
-      // state, which is why a restored row stayed at a fixed color on the next
-      // interactive pop.
+      // Mark the visual deselection before appearance updates can synchronize
+      // the controlled SwiftUI selection again during this transition.
       self.onNavigationSelectionDeselecting?()
     }
 
@@ -1569,12 +1651,20 @@ private final class ScrollInsetAdjustmentUIView: UIView, UIGestureRecognizerDele
   private func deselectNavigationRow(_ navigationRow: NavigationRowSelection, animated: Bool) {
     switch navigationRow {
     case let .table(tableView, indexPath):
+      if let target = selectedNavigationTarget?(), target.matches(tableView, indexPath: indexPath) {
+        target.deselect(animated: animated)
+        return
+      }
       tableView.cellForRow(at: indexPath)?.isHighlighted = false
       tableView.deselectRow(at: indexPath, animated: animated)
       if !animated {
         tableView.cellForRow(at: indexPath)?.isSelected = false
       }
     case let .collection(collectionView, indexPath):
+      if let target = selectedNavigationTarget?(), target.matches(collectionView, indexPath: indexPath) {
+        target.deselect(animated: animated)
+        return
+      }
       collectionView.cellForItem(at: indexPath)?.isHighlighted = false
       collectionView.deselectItem(at: indexPath, animated: animated)
       if !animated {

@@ -991,6 +991,7 @@ private final class ScrollInsetAdjustmentUIView: UIView, UIGestureRecognizerDele
   private var navigationTransitionGestureRecognizers: [UIGestureRecognizer] = []
   private var activeNavigationTransitionIdentifier: ObjectIdentifier?
   private var navigationSelectionTransitionIdentifier: ObjectIdentifier?
+  private weak var legacyNavigationSelectionTransitionCoordinator: UIViewControllerTransitionCoordinator?
   private var navigationSelectionTransitionSession: Int?
   private var navigationSelectionTransitionTarget: ListNavigationSelectionTarget?
   private var skipsNextNavigationSelectionFinalization = false
@@ -1004,6 +1005,20 @@ private final class ScrollInsetAdjustmentUIView: UIView, UIGestureRecognizerDele
   ) {
     guard clearsNavigationSelectionOnViewWillAppear else { return }
     guard #available(iOS 16.0, tvOS 16.0, *) else { return }
+#if !os(tvOS)
+    if #unavailable(iOS 19.0),
+      let coordinator,
+      let viewController = navigationSelectionViewController ?? findContentViewController(),
+      let navigationController = viewController.navigationController,
+      let destination = coordinator.viewController(forKey: .to),
+      !isNavigationDestination(viewController, destination, in: navigationController) {
+      // Cancelling this screen's outgoing pop also replays viewWillAppear.
+      // It is still the transition's source, not a returning destination.
+      // Capturing its cancelled row touch here leaks that session into the
+      // next real pop and can restore a highlight for a row never activated.
+      return
+    }
+#endif
     let session = navigationSelectionSession(for: coordinator)
     let handlesSession = shouldHandleNavigationSelectionSession?(session) == true
     // iOS 18 can recreate the SwiftUI host before the returning screen's
@@ -1141,11 +1156,27 @@ private final class ScrollInsetAdjustmentUIView: UIView, UIGestureRecognizerDele
     for coordinator: UIViewControllerTransitionCoordinator?
   ) -> Int? {
     let identifier = coordinator.map { ObjectIdentifier($0 as AnyObject) }
+#if !os(tvOS)
+    if #unavailable(iOS 19.0) {
+      if coordinator == nil || legacyNavigationSelectionTransitionCoordinator !== coordinator {
+        // A cancelled destination need not receive viewDidAppear, so appearance
+        // cannot be the owner of this cache's lifetime. Each new coordinator
+        // captures its own session, including an intentionally absent session.
+        // A weak reference also distinguishes later allocations reusing an
+        // expired coordinator's address; an ObjectIdentifier alone cannot.
+        legacyNavigationSelectionTransitionCoordinator = coordinator
+        navigationSelectionTransitionIdentifier = identifier
+        navigationSelectionTransitionSession = navigationSelectionSessionForTransition?()
+        navigationSelectionTransitionTarget = selectedNavigationTarget?()
+        skipsNextNavigationSelectionFinalization = false
+      }
+      return navigationSelectionTransitionSession
+    }
+#endif
     if navigationSelectionTransitionSession == nil {
       navigationSelectionTransitionIdentifier = identifier
       navigationSelectionTransitionSession = navigationSelectionSessionForTransition?()
       navigationSelectionTransitionTarget = selectedNavigationTarget?()
-    } else {
     }
     return navigationSelectionTransitionSession
   }

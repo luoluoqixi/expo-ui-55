@@ -248,11 +248,20 @@ final class ListNavigationSelectionTarget {
   func select(highlighted: Bool = false) {
     isSelectionVisible = true
     if let tableView {
+      // 返回转场可能先于 SwiftUI 列表数据恢复，不能用已失效的行重新选中。
+      guard indexPath.section >= 0, indexPath.section < tableView.numberOfSections,
+        indexPath.row >= 0, indexPath.row < tableView.numberOfRows(inSection: indexPath.section) else {
+        return
+      }
       tableView.selectRow(at: indexPath, animated: false, scrollPosition: .none)
       tableView.cellForRow(at: indexPath)?.isSelected = true
       tableView.cellForRow(at: indexPath)?.isHighlighted = highlighted
     }
     if let collectionView {
+      guard indexPath.section >= 0, indexPath.section < collectionView.numberOfSections,
+        indexPath.item >= 0, indexPath.item < collectionView.numberOfItems(inSection: indexPath.section) else {
+        return
+      }
       collectionView.selectItem(at: indexPath, animated: false, scrollPosition: [])
       collectionView.cellForItem(at: indexPath)?.isSelected = true
       if let cell = collectionView.cellForItem(at: indexPath) {
@@ -1724,10 +1733,19 @@ private final class ScrollInsetAdjustmentUIView: UIView, UIGestureRecognizerDele
   private func selectNavigationRow(_ navigationRow: NavigationRowSelection) {
     switch navigationRow {
     case let .table(tableView, indexPath):
+      // 取消返回的异步恢复也可能持有重建前的 indexPath。
+      guard indexPath.section >= 0, indexPath.section < tableView.numberOfSections,
+        indexPath.row >= 0, indexPath.row < tableView.numberOfRows(inSection: indexPath.section) else {
+        return
+      }
       tableView.selectRow(at: indexPath, animated: false, scrollPosition: .none)
       tableView.cellForRow(at: indexPath)?.isSelected = true
       tableView.cellForRow(at: indexPath)?.isHighlighted = false
     case let .collection(collectionView, indexPath):
+      guard indexPath.section >= 0, indexPath.section < collectionView.numberOfSections,
+        indexPath.item >= 0, indexPath.item < collectionView.numberOfItems(inSection: indexPath.section) else {
+        return
+      }
       collectionView.selectItem(at: indexPath, animated: false, scrollPosition: [])
       collectionView.cellForItem(at: indexPath)?.isSelected = true
       collectionView.cellForItem(at: indexPath)?.isHighlighted = false
